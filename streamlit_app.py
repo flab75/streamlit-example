@@ -1,11 +1,20 @@
-import streamlit as st
 import anthropic
 import json
 import os
 import pandas as pd
+import streamlit as st
 from datetime import datetime
 from pathlib import Path
 import random
+
+from pipeline.orchestrator import (
+    PipelineConfig,
+    load_config,
+    run_pipeline_sync,
+    save_config,
+)
+from pipeline.storage import ListingStorage
+from pipeline.filters import PropertyFilter
 
 st.set_page_config(
     page_title="Agent Immobilier IA",
@@ -21,8 +30,11 @@ PROSPECTS_FILE = DATA_DIR / "prospects.json"
 
 def load_prospects():
     if PROSPECTS_FILE.exists():
-        with open(PROSPECTS_FILE, encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(PROSPECTS_FILE, encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return []
     return []
 
 
@@ -315,12 +327,9 @@ def run_agent_turn(client, user_message, history):
             return text_response, tool_events, messages
 
 
-# ── UI ────────────────────────────────────────────────────────────────────────
-
-
 def render_tool_events(tool_events):
     for event in tool_events:
-        with st.expander(f"🔧 Outil `{event['tool']}`"):
+        with st.expander(f"Outil `{event['tool']}`"):
             col1, col2 = st.columns(2)
             with col1:
                 st.caption("Paramètres")
@@ -330,61 +339,15 @@ def render_tool_events(tool_events):
                 st.json(event["output"])
 
 
-def main():
-    st.title("🏠 Agent de Prospection Immobilière")
+# ── Tab 1 : Agent ─────────────────────────────────────────────────────────────
 
-    # ── Sidebar ──
-    with st.sidebar:
-        st.header("⚙️ Configuration")
-        api_key = st.text_input(
-            "Clé API Anthropic",
-            type="password",
-            value=os.environ.get("ANTHROPIC_API_KEY", ""),
-            help="Obtenez votre clé sur console.anthropic.com",
-        )
-        if not api_key:
-            st.warning("Clé API requise pour utiliser l'agent")
 
-        st.divider()
-        st.header("👥 Prospects")
-        prospects = load_prospects()
-        if prospects:
-            df = pd.DataFrame(
-                [
-                    {
-                        "Nom": p["nom"],
-                        "Ville": p["ville"],
-                        "Budget": f"{p['budget']:,} €",
-                        "Statut": p["statut"],
-                    }
-                    for p in prospects
-                ]
-            )
-            st.dataframe(df, use_container_width=True, hide_index=True)
-            csv_data = pd.DataFrame(prospects).to_csv(index=False, encoding="utf-8")
-            st.download_button(
-                "📥 Exporter CSV",
-                csv_data,
-                "prospects.csv",
-                "text/csv",
-                use_container_width=True,
-            )
-        else:
-            st.info("Aucun prospect enregistré")
-
-        st.divider()
-        if st.button("🗑️ Nouvelle conversation", use_container_width=True):
-            st.session_state.history = []
-            st.session_state.display = []
-            st.rerun()
-
-    # ── Session state ──
+def render_agent_tab(api_key: str):
     if "history" not in st.session_state:
         st.session_state.history = []
     if "display" not in st.session_state:
         st.session_state.display = []
 
-    # ── Chat display ──
     if not st.session_state.display:
         with st.chat_message("assistant"):
             st.markdown(
@@ -392,9 +355,9 @@ def main():
 **Bonjour ! Je suis votre agent de prospection immobilière.**
 
 Je peux vous aider à :
-- 🔍 Rechercher des biens par ville et critères (prix, surface, type)
-- 📊 Analyser le marché local (prix m², tendances, délais de vente)
-- 👥 Enregistrer et consulter vos prospects dans le CRM
+- Rechercher des biens par ville et critères (prix, surface, type)
+- Analyser le marché local (prix m², tendances, délais de vente)
+- Enregistrer et consulter vos prospects dans le CRM
 
 *Exemples :*
 > "Analyse le marché à Lyon"
@@ -410,7 +373,6 @@ Je peux vous aider à :
             if msg.get("tools"):
                 render_tool_events(msg["tools"])
 
-    # ── Chat input ──
     if prompt := st.chat_input("Votre question immobilière..."):
         if not api_key:
             st.error("Veuillez entrer votre clé API Anthropic dans la barre latérale.")
@@ -437,6 +399,352 @@ Je peux vous aider à :
 
         if any(e["tool"] == "save_prospect" for e in tool_events):
             st.rerun()
+
+
+# ── Tab 2 : Pipeline ──────────────────────────────────────────────────────────
+
+
+def render_pipeline_tab():
+    st.header("Pipeline de surveillance immobilière")
+
+    config = load_config()
+
+    st.subheader("Lancer une analyse")
+    if st.button("Analyser maintenant", type="primary"):
+        with st.spinner("Scraping et analyse en cours..."):
+            try:
+                result = run_pipeline_sync(config)
+                st.session_state["last_pipeline_result"] = result
+                st.session_state["last_pipeline_time"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+            except Exception as e:
+                st.error(f"Erreur lors du pipeline : {e}")
+                result = None
+
+        if result:
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Annonces scrapées", result["total_scraped"])
+            col2.metric("Après filtrage", result["after_filter"])
+            col3.metric("Nouvelles annonces", result["new_listings"])
+            if result["new_listings"] == 0:
+                st.info("Aucune nouvelle annonce trouvée (toutes déjà vues ou filtrées).")
+
+    st.divider()
+    st.subheader("Dernières annonces trouvées")
+
+    storage = ListingStorage(DATA_DIR)
+    listings = storage.load_listings()
+
+    if not listings:
+        st.info("Aucune annonce stockée. Lancez une analyse pour commencer.")
+        return
+
+    pf = PropertyFilter(config.__dict__)
+    water_kw = PropertyFilter.WATER_KEYWORDS
+    country_kw = PropertyFilter.COUNTRYSIDE_KEYWORDS
+
+    rows = []
+    for l in listings:
+        text = f"{l.get('title', '')} {l.get('description', '')}".lower()
+        has_water = any(kw in text for kw in water_kw)
+        is_countryside = any(kw in text for kw in country_kw)
+        rows.append({
+            "Source": l.get("source", "").upper(),
+            "Titre": l.get("title", ""),
+            "Prix (€)": l.get("price", 0),
+            "Surface (m²)": l.get("surface_m2") or "",
+            "Terrain (m²)": l.get("terrain_m2") or "",
+            "Lieu": l.get("location", ""),
+            "Eau": "Oui" if has_water else "Non",
+            "Campagne": "Oui" if is_countryside else "Non",
+            "URL": l.get("url", ""),
+            "_id": l.get("id", ""),
+        })
+
+    df = pd.DataFrame(rows)
+    display_df = df.drop(columns=["_id"])
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+    st.subheader("Détails des annonces")
+    for listing in listings[-20:]:
+        dvf = listing.get("dvf_stats", {})
+        with st.expander(f"{listing.get('source', '').upper()} — {listing.get('title', '')} — {listing.get('price', 0):,} €"):
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write(f"**Lieu :** {listing.get('location', 'N/A')}")
+                surface = listing.get("surface_m2")
+                terrain = listing.get("terrain_m2")
+                st.write(f"**Surface :** {surface} m²" if surface else "**Surface :** N/A")
+                st.write(f"**Terrain :** {terrain:,} m²" if terrain else "**Terrain :** N/A")
+                if listing.get("url"):
+                    st.markdown(f"[Voir l'annonce]({listing['url']})")
+            with col2:
+                if dvf:
+                    st.write(f"**Analyse DVF :** {dvf.get('analyse', 'N/A')}")
+                    if dvf.get("prix_m2_median"):
+                        st.write(f"**Prix médian DVF :** {dvf['prix_m2_median']:,} €/m²")
+                    if dvf.get("estimation_prix"):
+                        st.write(f"**Estimation :** {dvf['estimation_prix']:,} €")
+            st.write(f"**Description :** {listing.get('description', '')}")
+
+            if st.button("Ajouter en prospect", key=f"prospect_{listing.get('id', '')}"):
+                st.session_state["prefill_prospect"] = {
+                    "notes": f"Annonce : {listing.get('title', '')} — {listing.get('url', '')}",
+                    "ville": listing.get("location", "").split("-")[0].strip(),
+                    "budget": listing.get("price", 0),
+                }
+                st.info("Allez dans l'onglet CRM Prospects pour finaliser l'ajout.")
+
+
+# ── Tab 3 : Configuration ─────────────────────────────────────────────────────
+
+
+def render_config_tab():
+    st.header("Configuration du pipeline")
+
+    config = load_config()
+
+    with st.form("pipeline_config_form"):
+        st.subheader("Sources de scraping")
+        col1, col2 = st.columns(2)
+        with col1:
+            src_pap = st.checkbox("PAP.fr", value="pap" in config.sources)
+        with col2:
+            src_lbc = st.checkbox("LeBonCoin", value="leboncoin" in config.sources)
+
+        st.subheader("Critères de recherche")
+        ville_recherche = st.text_input("Ville de recherche", value=config.ville_recherche)
+        col1, col2 = st.columns(2)
+        with col1:
+            prix_max = st.number_input("Prix max (€)", min_value=0, value=config.prix_max, step=10000)
+            surface_min = st.number_input("Surface min (m²)", min_value=0, value=config.surface_min, step=10)
+        with col2:
+            prix_min = st.number_input("Prix min (€)", min_value=0, value=config.prix_min, step=10000)
+            terrain_min = st.number_input("Terrain min (m²)", min_value=0, value=config.terrain_min, step=100)
+
+        st.subheader("Filtres spéciaux")
+        col1, col2 = st.columns(2)
+        with col1:
+            filtrer_eau = st.checkbox("Propriétés avec eau (puits, source, étang...)", value=config.filtrer_eau)
+        with col2:
+            filtrer_campagne = st.checkbox("Propriétés en campagne (ferme, hameau...)", value=config.filtrer_campagne)
+
+        mots_cles_requis_str = st.text_input(
+            "Mots-clés requis (séparés par virgules)",
+            value=", ".join(config.mots_cles_requis),
+        )
+        mots_cles_exclus_str = st.text_input(
+            "Mots-clés exclus (séparés par virgules)",
+            value=", ".join(config.mots_cles_exclus),
+        )
+
+        st.subheader("Enrichissement")
+        enrichir_dvf = st.checkbox("Enrichir avec données DVF", value=config.enrichir_dvf)
+
+        st.subheader("Notifications Slack")
+        slack_webhook = st.text_input(
+            "URL du webhook Slack",
+            value=config.slack_webhook,
+            type="password",
+            placeholder="https://hooks.slack.com/services/...",
+        )
+
+        st.subheader("Notifications Email")
+        col1, col2 = st.columns(2)
+        with col1:
+            smtp_host = st.text_input("Serveur SMTP", value=config.smtp_host, placeholder="smtp.gmail.com")
+            smtp_user = st.text_input("Utilisateur SMTP", value=config.smtp_user)
+        with col2:
+            smtp_port = st.number_input("Port SMTP", min_value=1, max_value=65535, value=config.smtp_port)
+            smtp_password = st.text_input("Mot de passe SMTP", value=config.smtp_password, type="password")
+        email_destinataire = st.text_input("Email destinataire", value=config.email_destinataire)
+
+        st.subheader("Google Sheets")
+        google_sheets_id = st.text_input("ID du spreadsheet Google Sheets", value=config.google_sheets_id)
+        google_credentials_file = st.text_input(
+            "Chemin vers le fichier credentials (JSON)",
+            value=config.google_credentials_file,
+        )
+
+        submitted = st.form_submit_button("Sauvegarder la configuration", type="primary")
+
+    if submitted:
+        sources = []
+        if src_pap:
+            sources.append("pap")
+        if src_lbc:
+            sources.append("leboncoin")
+
+        config.sources = sources
+        config.ville_recherche = ville_recherche
+        config.prix_min = int(prix_min)
+        config.prix_max = int(prix_max)
+        config.surface_min = int(surface_min)
+        config.terrain_min = int(terrain_min)
+        config.filtrer_eau = filtrer_eau
+        config.filtrer_campagne = filtrer_campagne
+        config.mots_cles_requis = [k.strip() for k in mots_cles_requis_str.split(",") if k.strip()]
+        config.mots_cles_exclus = [k.strip() for k in mots_cles_exclus_str.split(",") if k.strip()]
+        config.enrichir_dvf = enrichir_dvf
+        config.slack_webhook = slack_webhook
+        config.smtp_host = smtp_host
+        config.smtp_port = int(smtp_port)
+        config.smtp_user = smtp_user
+        config.smtp_password = smtp_password
+        config.email_destinataire = email_destinataire
+        config.google_sheets_id = google_sheets_id
+        config.google_credentials_file = google_credentials_file
+
+        save_config(config)
+        st.success("Configuration sauvegardée avec succès.")
+
+
+# ── Tab 4 : CRM Prospects ─────────────────────────────────────────────────────
+
+
+def render_crm_tab():
+    st.header("CRM Prospects")
+
+    prospects = load_prospects()
+
+    if not prospects:
+        st.info("Aucun prospect enregistré. Utilisez l'agent pour en ajouter.")
+        return
+
+    statuts = ["tous", "nouveau", "contacté", "qualifié", "signé"]
+    selected_statut = st.selectbox("Filtrer par statut", statuts)
+
+    filtered = prospects if selected_statut == "tous" else [
+        p for p in prospects if p.get("statut") == selected_statut
+    ]
+
+    df = pd.DataFrame(
+        [
+            {
+                "ID": p.get("id", ""),
+                "Nom": p.get("nom", ""),
+                "Ville": p.get("ville", ""),
+                "Budget": f"{p.get('budget', 0):,} €",
+                "Type": p.get("type_bien", ""),
+                "Statut": p.get("statut", ""),
+                "Date": p.get("date_creation", ""),
+            }
+            for p in filtered
+        ]
+    )
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+    csv_data = pd.DataFrame(filtered).to_csv(index=False, encoding="utf-8")
+    st.download_button(
+        "Exporter CSV",
+        csv_data,
+        "prospects.csv",
+        "text/csv",
+        use_container_width=False,
+    )
+
+    st.subheader("Gestion des prospects")
+    for p in filtered:
+        with st.expander(f"{p.get('nom', '')} — {p.get('ville', '')} — {p.get('statut', '')}"):
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write(f"**Email :** {p.get('email', 'N/A')}")
+                st.write(f"**Téléphone :** {p.get('telephone', 'N/A')}")
+                st.write(f"**Budget :** {p.get('budget', 0):,} €")
+            with col2:
+                st.write(f"**Type de bien :** {p.get('type_bien', 'N/A')}")
+                st.write(f"**Statut :** {p.get('statut', 'N/A')}")
+                st.write(f"**Créé le :** {p.get('date_creation', 'N/A')}")
+            if p.get("notes"):
+                st.write(f"**Notes :** {p['notes']}")
+
+            new_statut = st.selectbox(
+                "Changer le statut",
+                ["nouveau", "contacté", "qualifié", "signé"],
+                index=["nouveau", "contacté", "qualifié", "signé"].index(p.get("statut", "nouveau")),
+                key=f"statut_{p.get('id', '')}",
+            )
+            if st.button("Mettre à jour le statut", key=f"update_{p.get('id', '')}"):
+                all_prospects = load_prospects()
+                for prospect in all_prospects:
+                    if prospect.get("id") == p.get("id"):
+                        prospect["statut"] = new_statut
+                save_prospects_to_file(all_prospects)
+                st.success(f"Statut mis à jour : {new_statut}")
+                st.rerun()
+
+    prefill = st.session_state.get("prefill_prospect")
+    if prefill:
+        st.subheader("Ajouter un prospect depuis une annonce")
+        with st.form("add_prospect_form"):
+            nom = st.text_input("Nom complet")
+            email = st.text_input("Email")
+            telephone = st.text_input("Téléphone")
+            budget = st.number_input("Budget (€)", min_value=0, value=prefill.get("budget", 0), step=5000)
+            type_bien = st.text_input("Type de bien", value="maison")
+            ville = st.text_input("Ville", value=prefill.get("ville", ""))
+            notes = st.text_area("Notes", value=prefill.get("notes", ""))
+
+            if st.form_submit_button("Enregistrer le prospect"):
+                if nom and email:
+                    save_prospect(nom, email, int(budget), type_bien, ville, telephone, notes)
+                    del st.session_state["prefill_prospect"]
+                    st.success("Prospect enregistré.")
+                    st.rerun()
+                else:
+                    st.error("Nom et email requis.")
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+
+def main():
+    st.title("Agent de Prospection Immobilière")
+
+    with st.sidebar:
+        st.header("Configuration")
+        api_key = st.text_input(
+            "Clé API Anthropic",
+            type="password",
+            value=os.environ.get("ANTHROPIC_API_KEY", ""),
+            help="Obtenez votre clé sur console.anthropic.com",
+        )
+        if not api_key:
+            st.warning("Clé API requise pour utiliser l'agent")
+
+        st.divider()
+        st.subheader("Statut pipeline")
+        last_time = st.session_state.get("last_pipeline_time")
+        last_result = st.session_state.get("last_pipeline_result")
+        if last_time and last_result:
+            st.write(f"Dernière exécution : {last_time}")
+            st.write(f"Nouvelles annonces : {last_result.get('new_listings', 0)}")
+        else:
+            st.write("Aucune exécution récente")
+
+        st.divider()
+        if st.button("Nouvelle conversation", use_container_width=True):
+            st.session_state.history = []
+            st.session_state.display = []
+            st.rerun()
+
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "Agent",
+        "Pipeline de surveillance",
+        "Configuration pipeline",
+        "CRM Prospects",
+    ])
+
+    with tab1:
+        render_agent_tab(api_key)
+
+    with tab2:
+        render_pipeline_tab()
+
+    with tab3:
+        render_config_tab()
+
+    with tab4:
+        render_crm_tab()
 
 
 if __name__ == "__main__":
