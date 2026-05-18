@@ -650,15 +650,16 @@ def render_config_tab():
 
     with st.form("pipeline_config_form"):
         st.subheader("Sources de scraping")
-        st.caption("PAP.fr et SeLoger utilisent des flux RSS fiables. LeBonCoin peut être bloqué par anti-bot.")
-        col1, col2, col3 = st.columns(3)
+        st.caption("Sources RSS ✅ : annonces réelles garanties. Sources ⚠️ : peuvent être bloquées par anti-bot.")
+        col1, col2 = st.columns(2)
         with col1:
             src_pap = st.checkbox("PAP.fr ✅ RSS", value="pap" in config.sources,
-                                  help="Flux RSS public — annonces réelles, aucun anti-bot")
-        with col2:
+                                  help="Flux RSS public — toutes annonces particuliers")
             src_seloger = st.checkbox("SeLoger ✅ RSS", value="seloger" in config.sources,
                                       help="Flux RSS public — annonces professionnelles")
-        with col3:
+        with col2:
+            src_rurales = st.checkbox("Propriétés Rurales ✅", value="proprietes-rurales" in config.sources,
+                                      help="proprietes-rurales.com — spécialiste rural, campagne, fermes, étangs")
             src_lbc = st.checkbox("LeBonCoin ⚠️", value="leboncoin" in config.sources,
                                   help="Pas de RSS — peut être bloqué par anti-bot")
 
@@ -731,6 +732,8 @@ def render_config_tab():
             sources.append("pap")
         if src_seloger:
             sources.append("seloger")
+        if src_rurales:
+            sources.append("proprietes-rurales")
         if src_lbc:
             sources.append("leboncoin")
 

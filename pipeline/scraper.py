@@ -347,6 +347,206 @@ def scrape_leboncoin_requests(criteria: dict) -> List[Dict]:
         return []
 
 
+# ── Proprietes-rurales.com ────────────────────────────────────────────────────
+
+
+def scrape_proprietes_rurales(criteria: dict) -> List[Dict]:
+    """
+    Scrape proprietes-rurales.com — spécialiste des biens ruraux français.
+
+    Stratégie :
+      1. Flux RSS  → /rss ou /flux-rss (si disponible)
+      2. requests + BeautifulSoup sur la page de recherche
+      3. Liste vide (Playwright géré par le coordinateur si nécessaire)
+    """
+    if not REQUESTS_AVAILABLE:
+        return []
+
+    prix_max = criteria.get("prix_max", 0)
+    surface_min = criteria.get("surface_min", 0)
+    prix_min = criteria.get("prix_min", 0)
+
+    _HEADERS = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "fr-FR,fr;q=0.9",
+        "Referer": "https://www.proprietes-rurales.com/",
+    }
+
+    # 1. Essai RSS
+    for rss_path in ["/rss", "/flux-rss", "/feed", "/catalogue/vente.xml"]:
+        try:
+            r = requests.get(
+                f"https://www.proprietes-rurales.com{rss_path}",
+                headers={**_HEADERS, "Accept": "application/rss+xml, application/xml, */*"},
+                timeout=10,
+            )
+            if r.status_code == 200 and ("<rss" in r.text[:200] or "<feed" in r.text[:200]):
+                root = ET.fromstring(r.content)
+                items = root.findall(".//item") or root.findall(".//entry")
+                listings = _parse_xml_items(items, "proprietes-rurales")
+                if listings:
+                    return listings
+        except Exception:
+            continue
+
+    # 2. requests + BeautifulSoup sur la page catalogue
+    try:
+        from bs4 import BeautifulSoup
+
+        params: dict = {"tri": "date-desc"}
+        if prix_max:
+            params["prix_max"] = prix_max
+        if prix_min:
+            params["prix_min"] = prix_min
+        if surface_min:
+            params["surface_min"] = surface_min
+
+        url = "https://www.proprietes-rurales.com/catalogue/vente/?" + urlencode(params)
+        resp = requests.get(url, headers=_HEADERS, timeout=15)
+        if resp.status_code != 200:
+            return []
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # Cherche d'abord un lien RSS dans le <head>
+        rss_link = soup.find("link", rel="alternate", type=re.compile(r"rss|atom", re.I))
+        if rss_link and rss_link.get("href"):
+            rss_url = rss_link["href"]
+            if not rss_url.startswith("http"):
+                rss_url = "https://www.proprietes-rurales.com" + rss_url
+            try:
+                r2 = requests.get(rss_url, headers=_HEADERS, timeout=10)
+                if r2.status_code == 200:
+                    root = ET.fromstring(r2.content)
+                    items = root.findall(".//item") or root.findall(".//entry")
+                    listings = _parse_xml_items(items, "proprietes-rurales")
+                    if listings:
+                        return listings
+            except Exception:
+                pass
+
+        # Sélecteurs communs pour les sites immobiliers français
+        card_selectors = [
+            ".property-item", ".bien-item", ".annonce-item", ".listing-item",
+            "article.property", "article.bien", "article.annonce",
+            "[class*='property-card']", "[class*='bien-card']", "[class*='result-item']",
+            ".catalogue-item", ".product-item", "li.bien",
+        ]
+        cards = []
+        for sel in card_selectors:
+            cards = soup.select(sel)
+            if cards:
+                break
+
+        if not cards:
+            # Fallback générique : tous les <article> ou <li> avec un lien interne
+            cards = [
+                tag for tag in soup.find_all(["article", "li"])
+                if tag.find("a", href=re.compile(r"/bien/|/annonce/|/vente/|/propriete/"))
+            ]
+
+        listings = []
+        seen: set = set()
+        for card in cards[:30]:
+            try:
+                link_el = card.find("a", href=re.compile(r"/bien/|/annonce/|/vente/|/propriete/|/detail/"))
+                if not link_el:
+                    link_el = card.find("a", href=True)
+                if not link_el:
+                    continue
+
+                href = link_el["href"]
+                full_url = (
+                    href if href.startswith("http")
+                    else "https://www.proprietes-rurales.com" + href
+                )
+                if full_url in seen or "proprietes-rurales.com" not in full_url:
+                    continue
+                seen.add(full_url)
+
+                # Titre
+                title_el = card.find(["h2", "h3", "h4"]) or card.find(
+                    class_=re.compile(r"title|titre|name|nom", re.I)
+                )
+                title = title_el.get_text(strip=True) if title_el else link_el.get_text(strip=True)
+                if not title:
+                    continue
+
+                # Prix
+                price_el = card.find(class_=re.compile(r"price|prix|tarif", re.I)) or card.find(
+                    string=re.compile(r"€")
+                )
+                price_text = price_el.get_text(strip=True) if hasattr(price_el, "get_text") else str(price_el or "")
+                price = _parse_price_from_text(price_text)
+
+                # Description + surface/terrain
+                desc_el = card.find(class_=re.compile(r"desc|detail|info|caracteristique", re.I))
+                desc_text = desc_el.get_text(" ", strip=True) if desc_el else card.get_text(" ", strip=True)
+                surface = _parse_surface_from_text(desc_text)
+                terrain = _parse_terrain_from_text(desc_text)
+
+                # Localisation
+                loc_el = card.find(class_=re.compile(r"location|ville|localisation|lieu|commune", re.I))
+                location = loc_el.get_text(strip=True) if loc_el else ""
+
+                uid = hashlib.md5(full_url.encode()).hexdigest()[:8]
+                listings.append({
+                    "id": f"proprietes-rurales-{uid}",
+                    "source": "proprietes-rurales",
+                    "title": title[:120],
+                    "price": price,
+                    "surface_m2": surface,
+                    "terrain_m2": terrain,
+                    "description": desc_text[:500],
+                    "location": location,
+                    "url": full_url,
+                    "is_mock": False,
+                    "date_scraped": datetime.now().isoformat(),
+                })
+            except Exception:
+                continue
+
+        return listings
+
+    except Exception:
+        return []
+
+
+def _parse_xml_items(items, source: str) -> List[Dict]:
+    """Parse générique d'items RSS/Atom."""
+    listings = []
+    for item in items:
+        try:
+            title = (item.findtext("title") or "").strip()
+            link = (item.findtext("link") or item.get("href", "")).strip()
+            desc_html = item.findtext("description") or item.findtext("summary") or ""
+            if not link or not title:
+                continue
+            desc_text = re.sub(r"<[^>]+>", " ", desc_html)
+            desc_text = re.sub(r"\s+", " ", desc_text).strip()
+            uid = hashlib.md5(link.encode()).hexdigest()[:8]
+            listings.append({
+                "id": f"{source}-{uid}",
+                "source": source,
+                "title": title,
+                "price": _parse_price_from_text(desc_text) or _parse_price_from_text(title),
+                "surface_m2": _parse_surface_from_text(desc_text),
+                "terrain_m2": _parse_terrain_from_text(desc_text),
+                "description": desc_text[:500],
+                "location": "",
+                "url": link,
+                "is_mock": False,
+                "date_scraped": datetime.now().isoformat(),
+            })
+        except Exception:
+            continue
+    return listings
+
+
 # ── Coordinateur des scrapers ─────────────────────────────────────────────────
 
 
@@ -357,6 +557,7 @@ async def run_scrapers(sources: List[str], criteria: dict) -> List[Dict]:
       PAP    → RSS (fiable) → Playwright → mock
       LeBonCoin → requests → Playwright → mock
       SeLoger → RSS (fiable) → mock
+      Proprietes-rurales → RSS → requests + BS4 → mock
     """
     all_listings: List[Dict] = []
 
@@ -365,7 +566,6 @@ async def run_scrapers(sources: List[str], criteria: dict) -> List[Dict]:
         if listings:
             all_listings.extend(listings)
         else:
-            # Playwright en fallback
             listings = await _scrape_pap_playwright(criteria)
             all_listings.extend(listings if listings else _mock_listings(criteria, "pap"))
 
@@ -380,6 +580,10 @@ async def run_scrapers(sources: List[str], criteria: dict) -> List[Dict]:
     if "seloger" in sources:
         listings = scrape_seloger_rss(criteria)
         all_listings.extend(listings if listings else _mock_listings(criteria, "seloger"))
+
+    if "proprietes-rurales" in sources:
+        listings = scrape_proprietes_rurales(criteria)
+        all_listings.extend(listings if listings else _mock_listings(criteria, "proprietes-rurales"))
 
     return all_listings
 
