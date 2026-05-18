@@ -25,7 +25,11 @@ except ImportError:
 
 def _mock_listings(criteria: dict, source: str) -> List[Dict]:
     random.seed(hash(str(criteria) + source) % (2 ** 32))
-    ville = criteria.get("ville", "France")
+    ville = (
+        criteria.get("filtre_ville")
+        or criteria.get("filtre_departement")
+        or criteria.get("ville", "France")
+    )
     prix_max = criteria.get("prix_max", 300000)
     surface_min = criteria.get("surface_min", 0)
 
@@ -116,8 +120,25 @@ def scrape_pap_rss(criteria: dict) -> List[Dict]:
     prix_max = criteria.get("prix_max", 0)
     surface_min = criteria.get("surface_min", 0)
 
-    # PAP.fr expose ses recherches en XML/RSS
-    base_url = "https://www.pap.fr/annonce/ventes-maisons-g302.xml"
+    # Département : PAP expose des flux RSS géolocalisés
+    import unicodedata as _ud
+    dept_query = criteria.get("filtre_departement", "")
+    dept_slug = ""
+    if dept_query:
+        try:
+            from .geo_data import resolve_dept as _resolve
+            _, dept_name = _resolve(dept_query)
+            if dept_name:
+                dept_slug = _ud.normalize("NFKD", dept_name.lower()).encode("ascii", "ignore").decode()
+                dept_slug = re.sub(r"[^a-z0-9]+", "-", dept_slug).strip("-")
+        except Exception:
+            pass
+
+    if dept_slug:
+        base_url = f"https://www.pap.fr/annonce/ventes-maisons-departement-{dept_slug}-g302.xml"
+    else:
+        base_url = "https://www.pap.fr/annonce/ventes-maisons-g302.xml"
+
     params: dict = {}
     if prix_max:
         params["prix-max"] = prix_max
@@ -404,6 +425,20 @@ def scrape_proprietes_rurales(criteria: dict) -> List[Dict]:
             params["prix_min"] = prix_min
         if surface_min:
             params["surface_min"] = surface_min
+
+        dept_query = criteria.get("filtre_departement", "")
+        if dept_query:
+            try:
+                from .geo_data import resolve_dept as _resolve
+                _, dept_name = _resolve(dept_query)
+                if dept_name:
+                    params["departement"] = dept_name
+            except Exception:
+                pass
+
+        ville_query = criteria.get("filtre_ville", "")
+        if ville_query:
+            params["ville"] = ville_query
 
         url = "https://www.proprietes-rurales.com/catalogue/vente/?" + urlencode(params)
         resp = requests.get(url, headers=_HEADERS, timeout=15)

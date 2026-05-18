@@ -16,6 +16,7 @@ from pipeline.orchestrator import (
 from pipeline.storage import ListingStorage
 from pipeline.filters import PropertyFilter
 from pipeline.ville_enricher import get_ville_info_sync, ville_url
+from pipeline.geo_data import REGIONS
 
 st.set_page_config(
     page_title="Agent Immobilier IA",
@@ -487,23 +488,8 @@ def render_pipeline_tab():
 
 
     # ── Résumé des filtres actifs ──────────────────────────────────────────────
-    active_filters = []
-    if config.prix_min:
-        active_filters.append(f"Prix min : {config.prix_min:,} €")
-    if config.prix_max:
-        active_filters.append(f"Prix max : {config.prix_max:,} €")
-    if config.surface_min:
-        active_filters.append(f"Surface ≥ {config.surface_min} m²")
-    if config.terrain_min:
-        active_filters.append(f"Terrain ≥ {config.terrain_min:,} m²")
-    if config.filtrer_eau:
-        active_filters.append("Eau requise (puits / source / étang…)")
-    if config.filtrer_campagne:
-        active_filters.append("Campagne requise (ferme / hameau…)")
-    if config.mots_cles_requis:
-        active_filters.append(f"Mots requis : {', '.join(config.mots_cles_requis)}")
-    if config.mots_cles_exclus:
-        active_filters.append(f"Mots exclus : {', '.join(config.mots_cles_exclus)}")
+    pf_summary = PropertyFilter(config.__dict__)
+    active_filters = pf_summary.active_filters_summary()
 
     with st.expander("🔎 Filtres actifs", expanded=bool(active_filters)):
         if active_filters:
@@ -555,7 +541,6 @@ def render_pipeline_tab():
         st.info("Aucune annonce stockée. Lancez une analyse pour commencer.")
         return
 
-    pf = PropertyFilter(config.__dict__)
     water_kw = PropertyFilter.WATER_KEYWORDS
     country_kw = PropertyFilter.COUNTRYSIDE_KEYWORDS
 
@@ -663,8 +648,33 @@ def render_config_tab():
             src_lbc = st.checkbox("LeBonCoin ⚠️", value="leboncoin" in config.sources,
                                   help="Pas de RSS — peut être bloqué par anti-bot")
 
+        st.subheader("Localisation")
+        region_options = ["(toute la France)"] + sorted(REGIONS.keys())
+        filtre_region_saved = getattr(config, "filtre_region", "")
+        region_idx = (
+            region_options.index(filtre_region_saved)
+            if filtre_region_saved in region_options else 0
+        )
+        filtre_region_raw = st.selectbox("Région", region_options, index=region_idx)
+        filtre_region = "" if filtre_region_raw == "(toute la France)" else filtre_region_raw
+
+        col1, col2 = st.columns(2)
+        with col1:
+            filtre_departement = st.text_input(
+                "Département (nom ou code INSEE)",
+                value=getattr(config, "filtre_departement", ""),
+                placeholder="ex : Dordogne ou 24",
+                help="Filtrer les annonces par département. Laissez vide pour ignorer.",
+            )
+        with col2:
+            filtre_ville = st.text_input(
+                "Ville / commune",
+                value=getattr(config, "filtre_ville", ""),
+                placeholder="ex : Périgueux",
+                help="Filtrer les annonces par ville. Laissez vide pour ignorer.",
+            )
+
         st.subheader("Critères de recherche")
-        ville_recherche = st.text_input("Ville de recherche", value=config.ville_recherche)
         col1, col2 = st.columns(2)
         with col1:
             prix_max = st.number_input("Prix max (€)", min_value=0, value=config.prix_max, step=10000)
@@ -738,7 +748,9 @@ def render_config_tab():
             sources.append("leboncoin")
 
         config.sources = sources
-        config.ville_recherche = ville_recherche
+        config.filtre_region = filtre_region
+        config.filtre_departement = filtre_departement.strip()
+        config.filtre_ville = filtre_ville.strip()
         config.prix_min = int(prix_min)
         config.prix_max = int(prix_max)
         config.surface_min = int(surface_min)

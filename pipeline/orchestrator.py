@@ -24,6 +24,9 @@ class PipelineConfig:
         self.filtrer_campagne: bool = False
         self.mots_cles_requis: List[str] = []
         self.mots_cles_exclus: List[str] = []
+        self.filtre_region: str = ""
+        self.filtre_departement: str = ""
+        self.filtre_ville: str = ""
         self.enrichir_dvf: bool = True
         self.enrichir_ville: bool = True
         self.slack_webhook: str = ""
@@ -34,14 +37,23 @@ class PipelineConfig:
         self.email_destinataire: str = ""
         self.google_sheets_id: str = ""
         self.google_credentials_file: str = ""
-        self.ville_recherche: str = "France"
+        self.ville_recherche: str = "France"  # conservé pour compatibilité
 
 
 async def run_pipeline(config: PipelineConfig) -> dict:
+    ville = (
+        getattr(config, "filtre_ville", "")
+        or getattr(config, "filtre_departement", "")
+        or getattr(config, "ville_recherche", "France")
+        or "France"
+    )
     criteria = {
-        "ville": config.ville_recherche,
+        "ville": ville,
         "prix_max": config.prix_max,
         "surface_min": config.surface_min,
+        "filtre_departement": getattr(config, "filtre_departement", ""),
+        "filtre_ville": getattr(config, "filtre_ville", ""),
+        "filtre_region": getattr(config, "filtre_region", ""),
     }
     all_listings = await run_scrapers(config.sources, criteria)
 
