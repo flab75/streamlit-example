@@ -518,6 +518,14 @@ def render_pipeline_tab():
     water_kw = PropertyFilter.WATER_KEYWORDS
     country_kw = PropertyFilter.COUNTRYSIDE_KEYWORDS
 
+    nb_mock = sum(1 for l in listings if l.get("is_mock"))
+    if nb_mock > 0:
+        st.info(
+            f"ℹ️ {nb_mock}/{len(listings)} annonces sont des **données de démonstration** "
+            "(le scraping PAP/LBC est bloqué par anti-bot). "
+            "Les liens vers des annonces réelles apparaîtront dès que le scraping réussit."
+        )
+
     rows = []
     for l in listings:
         text = f"{l.get('title', '')} {l.get('description', '')}".lower()
@@ -530,9 +538,9 @@ def render_pipeline_tab():
             "Surface (m²)": l.get("surface_m2") or "",
             "Terrain (m²)": l.get("terrain_m2") or "",
             "Lieu": l.get("location", ""),
-            "Eau": "Oui" if has_water else "Non",
-            "Campagne": "Oui" if is_countryside else "Non",
-            "URL": l.get("url", ""),
+            "Eau": "💧" if has_water else "—",
+            "Campagne": "🌿" if is_countryside else "—",
+            "Type": "Démo" if l.get("is_mock") else "Réel",
             "_id": l.get("id", ""),
         })
 
@@ -540,14 +548,22 @@ def render_pipeline_tab():
     display_df = df.drop(columns=["_id"])
     st.dataframe(display_df, use_container_width=True, hide_index=True)
 
+    if st.button("🗑️ Vider le cache des annonces", help="Supprime les annonces stockées et les IDs vus"):
+        for f in [DATA_DIR / "listings.json", DATA_DIR / "seen_ids.json"]:
+            f.unlink(missing_ok=True)
+        st.success("Cache vidé — relancez une analyse.")
+        st.rerun()
+
     st.subheader("Détails des annonces")
     for listing in listings[-20:]:
         dvf = listing.get("dvf_stats", {})
         ville_stats = listing.get("ville_stats", {})
         score_global = ville_stats.get("score_global")
-        score_label = f" · Qualité de vie {score_global}/10" if score_global else ""
+        is_mock = listing.get("is_mock", False)
+        score_label = f" · {score_global}/10" if score_global else ""
+        mock_label = " 〔Démo〕" if is_mock else ""
         with st.expander(
-            f"{listing.get('source', '').upper()} — {listing.get('title', '')} — {listing.get('price', 0):,} €{score_label}"
+            f"{listing.get('source', '').upper()}{mock_label} — {listing.get('title', '')} — {listing.get('price', 0):,} €{score_label}"
         ):
             col1, col2 = st.columns(2)
             with col1:
@@ -556,8 +572,11 @@ def render_pipeline_tab():
                 terrain = listing.get("terrain_m2")
                 st.write(f"**Surface :** {surface} m²" if surface else "**Surface :** N/A")
                 st.write(f"**Terrain :** {terrain:,} m²" if terrain else "**Terrain :** N/A")
-                if listing.get("url"):
-                    st.markdown(f"[Voir l'annonce]({listing['url']})")
+                url = listing.get("url", "")
+                if url and not is_mock:
+                    st.markdown(f"[Voir l'annonce sur {listing.get('source','').upper()}]({url})")
+                elif is_mock:
+                    st.caption("Données de démonstration — lien non disponible")
             with col2:
                 if dvf:
                     st.write(f"**Analyse DVF :** {dvf.get('analyse', 'N/A')}")

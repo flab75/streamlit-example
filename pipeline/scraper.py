@@ -92,7 +92,8 @@ def _mock_listings(criteria: dict, source: str) -> List[Dict]:
             "terrain_m2": terrain,
             "description": tmpl["description"],
             "location": random.choice(locations_rurales),
-            "url": url,
+            "url": "",          # pas de faux lien — les URLs simulées redirigent vers des pages PAP/LBC
+            "is_mock": True,    # marqueur explicite : données de démonstration
             "date_scraped": datetime.now().isoformat(),
         })
 
