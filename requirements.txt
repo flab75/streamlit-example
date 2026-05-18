@@ -1,3 +1,4 @@
-altair
-pandas
-streamlit
+anthropic>=0.40.0
+mcp[cli]>=1.0.0
+pandas>=2.0.0
+streamlit>=1.35.0

@@ -1,0 +1,27 @@
+{
+  "_comment": "Copiez ce contenu dans ~/Library/Application Support/Claude/claude_desktop_config.json (macOS) ou %APPDATA%\\Claude\\claude_desktop_config.json (Windows). Remplacez CHEMIN_ABSOLU par le chemin absolu du dossier du projet.",
+  "mcpServers": {
+    "agent-immobilier": {
+      "_comment": "Serveur MCP personnalisé — outils de prospection immobilière",
+      "command": "python",
+      "args": ["CHEMIN_ABSOLU/mcp_server.py"],
+      "env": {
+        "ANTHROPIC_API_KEY": "votre-cle-api-ici"
+      }
+    },
+    "filesystem": {
+      "_comment": "Accès fichiers — permet à Claude Desktop de lire/écrire les prospects et données locales",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "CHEMIN_ABSOLU/data"
+      ]
+    },
+    "fetch": {
+      "_comment": "Récupération de pages web — pour analyser des annonces immobilières en ligne",
+      "command": "uvx",
+      "args": ["mcp-server-fetch"]
+    }
+  }
+}
