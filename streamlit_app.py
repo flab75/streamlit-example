@@ -15,6 +15,7 @@ from pipeline.orchestrator import (
 )
 from pipeline.storage import ListingStorage
 from pipeline.filters import PropertyFilter
+from pipeline.ville_enricher import get_ville_info_sync, ville_url
 
 st.set_page_config(
     page_title="Agent Immobilier IA",
@@ -239,6 +240,21 @@ TOOLS_SCHEMA = [
             "required": ["ville"],
         },
     },
+    {
+        "name": "get_ville_info",
+        "description": (
+            "Récupère les scores de qualité de vie d'une ville française depuis villesavivre.fr : "
+            "éducation, santé, transport, nature, sécurité, culture, économie. "
+            "Utile pour comparer des villes ou conseiller un prospect sur un lieu de vie."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ville": {"type": "string", "description": "Nom de la ville française"}
+            },
+            "required": ["ville"],
+        },
+    },
 ]
 
 SYSTEM_PROMPT = """Tu es un assistant expert en prospection immobilière pour les agents immobiliers français.
@@ -280,6 +296,8 @@ def dispatch_tool(name, tool_input):
             out = list_prospects_tool(**tool_input)
         elif name == "analyze_market":
             out = analyze_market(**tool_input)
+        elif name == "get_ville_info":
+            out = get_ville_info_sync(**tool_input)
         else:
             out = {"error": f"Outil inconnu: {name}"}
         return json.dumps(out, ensure_ascii=False)
@@ -357,6 +375,7 @@ def render_agent_tab(api_key: str):
 Je peux vous aider à :
 - Rechercher des biens par ville et critères (prix, surface, type)
 - Analyser le marché local (prix m², tendances, délais de vente)
+- Consulter les scores de qualité de vie d'une ville (villesavivre.fr)
 - Enregistrer et consulter vos prospects dans le CRM
 
 *Exemples :*
@@ -364,6 +383,8 @@ Je peux vous aider à :
 > "Cherche des appartements à Nantes entre 200k et 350k€"
 > "Enregistre : Jean Dupont, jean@mail.com, budget 400k, maison, Bordeaux"
 > "Liste mes prospects"
+> "Qualité de vie à Nantes ?"
+> "Compare Bordeaux et Toulouse pour s'installer"
             """
             )
 
@@ -399,6 +420,61 @@ Je peux vous aider à :
 
         if any(e["tool"] == "save_prospect" for e in tool_events):
             st.rerun()
+
+
+# ── Affichage scores ville ────────────────────────────────────────────────────
+
+
+def _render_ville_scores(ville_stats: dict):
+    """Affiche les scores villesavivre.fr sous forme de barres de progression."""
+    source = ville_stats.get("source", "villesavivre.fr")
+    url = ville_stats.get("url", "")
+    note = ville_stats.get("note", "")
+    scores = ville_stats.get("scores", {})
+    score_global = ville_stats.get("score_global")
+
+    title = f"**Qualité de vie — {ville_stats.get('ville', '')}**"
+    if url:
+        title = f"**[Qualité de vie — {ville_stats.get('ville', '')}]({url})**"
+    st.markdown(title)
+
+    if score_global:
+        color = "#2ecc71" if score_global >= 7 else "#f39c12" if score_global >= 5 else "#e74c3c"
+        st.markdown(
+            f"<span style='font-size:1.3em;font-weight:bold;color:{color}'>"
+            f"Score global : {score_global} / 10</span>",
+            unsafe_allow_html=True,
+        )
+
+    if scores:
+        cols = st.columns(min(4, len(scores)))
+        for i, (label, score) in enumerate(scores.items()):
+            with cols[i % len(cols)]:
+                color = "#2ecc71" if score >= 7 else "#f39c12" if score >= 5 else "#e74c3c"
+                short = label.split("&")[0].split("(")[0].strip()
+                st.markdown(
+                    f"<small>{short}</small><br>"
+                    f"<span style='color:{color};font-weight:bold'>{score}/10</span>",
+                    unsafe_allow_html=True,
+                )
+                st.progress(score / 10)
+
+    infos = ville_stats.get("infos", {})
+    if infos:
+        parts = []
+        if infos.get("population"):
+            parts.append(f"Pop. {int(infos['population']):,}".replace(",", " "))
+        if infos.get("taux_chomage"):
+            parts.append(f"Chômage {infos['taux_chomage']}")
+        if infos.get("espaces_verts_pct"):
+            parts.append(f"Espaces verts {infos['espaces_verts_pct']}")
+        if parts:
+            st.caption(" · ".join(parts))
+
+    caption = f"Source : {source}"
+    if note:
+        caption += f" — {note}"
+    st.caption(caption)
 
 
 # ── Tab 2 : Pipeline ──────────────────────────────────────────────────────────
@@ -467,7 +543,12 @@ def render_pipeline_tab():
     st.subheader("Détails des annonces")
     for listing in listings[-20:]:
         dvf = listing.get("dvf_stats", {})
-        with st.expander(f"{listing.get('source', '').upper()} — {listing.get('title', '')} — {listing.get('price', 0):,} €"):
+        ville_stats = listing.get("ville_stats", {})
+        score_global = ville_stats.get("score_global")
+        score_label = f" · Qualité de vie {score_global}/10" if score_global else ""
+        with st.expander(
+            f"{listing.get('source', '').upper()} — {listing.get('title', '')} — {listing.get('price', 0):,} €{score_label}"
+        ):
             col1, col2 = st.columns(2)
             with col1:
                 st.write(f"**Lieu :** {listing.get('location', 'N/A')}")
@@ -485,6 +566,10 @@ def render_pipeline_tab():
                     if dvf.get("estimation_prix"):
                         st.write(f"**Estimation :** {dvf['estimation_prix']:,} €")
             st.write(f"**Description :** {listing.get('description', '')}")
+
+            if ville_stats.get("scores"):
+                st.divider()
+                _render_ville_scores(ville_stats)
 
             if st.button("Ajouter en prospect", key=f"prospect_{listing.get('id', '')}"):
                 st.session_state["prefill_prospect"] = {
@@ -538,7 +623,14 @@ def render_config_tab():
         )
 
         st.subheader("Enrichissement")
-        enrichir_dvf = st.checkbox("Enrichir avec données DVF", value=config.enrichir_dvf)
+        col1, col2 = st.columns(2)
+        with col1:
+            enrichir_dvf = st.checkbox("Enrichir avec données DVF (data.gouv.fr)", value=config.enrichir_dvf)
+        with col2:
+            enrichir_ville = st.checkbox(
+                "Enrichir avec scores de vie (villesavivre.fr)",
+                value=getattr(config, "enrichir_ville", True),
+            )
 
         st.subheader("Notifications Slack")
         slack_webhook = st.text_input(
@@ -585,6 +677,7 @@ def render_config_tab():
         config.mots_cles_requis = [k.strip() for k in mots_cles_requis_str.split(",") if k.strip()]
         config.mots_cles_exclus = [k.strip() for k in mots_cles_exclus_str.split(",") if k.strip()]
         config.enrichir_dvf = enrichir_dvf
+        config.enrichir_ville = enrichir_ville
         config.slack_webhook = slack_webhook
         config.smtp_host = smtp_host
         config.smtp_port = int(smtp_port)

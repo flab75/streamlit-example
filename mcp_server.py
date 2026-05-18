@@ -198,5 +198,22 @@ def analyze_market(ville: str) -> dict:
     }
 
 
+@mcp.tool()
+def get_ville_info(ville: str) -> dict:
+    """
+    Récupère les scores de qualité de vie d'une ville française depuis villesavivre.fr.
+    Retourne : score global, scores par catégorie (transport, éducation, santé, nature,
+    sécurité, culture, économie), et lien vers la fiche complète.
+
+    Args:
+        ville: Nom de la ville française (ex: Lyon, Nantes, Bordeaux)
+    """
+    try:
+        from pipeline.ville_enricher import get_ville_info_sync
+        return get_ville_info_sync(ville)
+    except Exception as exc:
+        return {"error": str(exc), "ville": ville}
+
+
 if __name__ == "__main__":
     mcp.run()

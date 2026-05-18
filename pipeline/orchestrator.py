@@ -6,6 +6,7 @@ from typing import List
 from .scraper import run_scrapers
 from .filters import PropertyFilter
 from .dvf_enricher import enrich_listing
+from .ville_enricher import fetch_ville_data
 from .storage import ListingStorage, GoogleSheetsStorage
 from .notifier import notify_all
 
@@ -24,6 +25,7 @@ class PipelineConfig:
         self.mots_cles_requis: List[str] = []
         self.mots_cles_exclus: List[str] = []
         self.enrichir_dvf: bool = True
+        self.enrichir_ville: bool = True
         self.slack_webhook: str = ""
         self.smtp_host: str = ""
         self.smtp_port: int = 587
@@ -55,11 +57,20 @@ async def run_pipeline(config: PipelineConfig) -> dict:
         if not sheets_storage.is_available():
             sheets_storage = None
 
+    # Cache des données ville pour éviter les appels répétés
+    ville_cache: dict = {}
+
     enriched = []
     notifications_sent = 0
     for listing in new_listings:
         if config.enrichir_dvf:
             listing = enrich_listing(listing)
+        if config.enrichir_ville:
+            ville = listing.get("location", "").split("-")[0].strip().split(",")[0].strip()
+            if ville:
+                if ville not in ville_cache:
+                    ville_cache[ville] = await fetch_ville_data(ville)
+                listing["ville_stats"] = ville_cache[ville]
         storage.save_listing(listing)
         storage.mark_seen(listing["id"])
         if sheets_storage:
