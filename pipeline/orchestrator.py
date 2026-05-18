@@ -15,7 +15,7 @@ DATA_DIR = Path(__file__).parent.parent / "data"
 
 class PipelineConfig:
     def __init__(self):
-        self.sources: List[str] = ["pap", "leboncoin"]
+        self.sources: List[str] = ["pap", "seloger"]
         self.prix_min: int = 0
         self.prix_max: int = 300000
         self.surface_min: int = 80
