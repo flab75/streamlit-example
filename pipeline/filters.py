@@ -30,18 +30,23 @@ class PropertyFilter:
             return False
 
         price = listing.get("price", 0)
-        if self.prix_min and price < self.prix_min:
-            return False
-        if self.prix_max and price > self.prix_max:
-            return False
+        # price=0 signifie "non extrait" — on ne filtre pas sur les prix inconnus
+        if price > 0:
+            if self.prix_min and price < self.prix_min:
+                return False
+            if self.prix_max and price > self.prix_max:
+                return False
 
         surface = listing.get("surface_m2")
-        if self.surface_min and surface is not None and surface < self.surface_min:
-            return False
+        # surface=None signifie "non extraite" — pas de filtrage sur valeur inconnue
+        if surface is not None and surface > 0:
+            if self.surface_min and surface < self.surface_min:
+                return False
 
         terrain = listing.get("terrain_m2")
-        if self.terrain_min and terrain is not None and terrain < self.terrain_min:
-            return False
+        if terrain is not None and terrain > 0:
+            if self.terrain_min and terrain < self.terrain_min:
+                return False
 
         text = f"{listing.get('title', '')} {listing.get('description', '')}".lower()
 

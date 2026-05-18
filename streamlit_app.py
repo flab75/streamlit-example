@@ -485,8 +485,46 @@ def render_pipeline_tab():
 
     config = load_config()
 
+
+    # ── Résumé des filtres actifs ──────────────────────────────────────────────
+    active_filters = []
+    if config.prix_min:
+        active_filters.append(f"Prix min : {config.prix_min:,} €")
+    if config.prix_max:
+        active_filters.append(f"Prix max : {config.prix_max:,} €")
+    if config.surface_min:
+        active_filters.append(f"Surface ≥ {config.surface_min} m²")
+    if config.terrain_min:
+        active_filters.append(f"Terrain ≥ {config.terrain_min:,} m²")
+    if config.filtrer_eau:
+        active_filters.append("Eau requise (puits / source / étang…)")
+    if config.filtrer_campagne:
+        active_filters.append("Campagne requise (ferme / hameau…)")
+    if config.mots_cles_requis:
+        active_filters.append(f"Mots requis : {', '.join(config.mots_cles_requis)}")
+    if config.mots_cles_exclus:
+        active_filters.append(f"Mots exclus : {', '.join(config.mots_cles_exclus)}")
+
+    with st.expander("🔎 Filtres actifs", expanded=bool(active_filters)):
+        if active_filters:
+            for f in active_filters:
+                st.write(f"• {f}")
+        else:
+            st.write("Aucun filtre actif — toutes les annonces passent.")
+        col_a, col_b = st.columns(2)
+        with col_a:
+            if st.button("⚙️ Modifier les filtres"):
+                st.info("Allez dans l'onglet **⚙️ Configuration** pour modifier les critères.")
+        with col_b:
+            if st.button("🔄 Réinitialiser aux valeurs par défaut"):
+                cfg_file = DATA_DIR / "pipeline_config.json"
+                if cfg_file.exists():
+                    cfg_file.unlink()
+                st.success("Configuration réinitialisée — tous les filtres sont désactivés.")
+                st.rerun()
+
     st.subheader("Lancer une analyse")
-    if st.button("Analyser maintenant", type="primary"):
+    if st.button("▶ Analyser maintenant", type="primary"):
         with st.spinner("Scraping et analyse en cours..."):
             try:
                 result = run_pipeline_sync(config)
@@ -501,8 +539,11 @@ def render_pipeline_tab():
             col1.metric("Annonces scrapées", result["total_scraped"])
             col2.metric("Après filtrage", result["after_filter"])
             col3.metric("Nouvelles annonces", result["new_listings"])
-            if result["new_listings"] == 0:
-                st.info("Aucune nouvelle annonce trouvée (toutes déjà vues ou filtrées).")
+            if result["after_filter"] == 0 and result["total_scraped"] > 0:
+                st.warning(
+                    "0 annonce après filtrage. Vérifiez vos critères dans les **Filtres actifs** "
+                    "ci-dessus, ou cliquez **Réinitialiser aux valeurs par défaut**."
+                )
 
     st.divider()
     st.subheader("Dernières annonces trouvées")
