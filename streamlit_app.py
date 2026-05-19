@@ -518,6 +518,8 @@ def render_pipeline_tab():
                 result = run_pipeline_sync(config)
                 st.session_state["last_pipeline_result"] = result
                 st.session_state["last_pipeline_time"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                if result.get("fluximmo_listings"):
+                    st.session_state["fluximmo_live"] = result["fluximmo_listings"]
             except Exception as e:
                 st.error(f"Erreur lors du pipeline : {e}")
                 result = None
@@ -572,7 +574,23 @@ def render_pipeline_tab():
             st.rerun()
 
     storage = ListingStorage(DATA_DIR)
-    listings = storage.load_listings()
+    stored = storage.load_listings()
+
+    # Annonces Fluximmo live (dernière exécution du pipeline) — affichées en priorité
+    fluximmo_live = st.session_state.get("fluximmo_live", [])
+    nb_stored_real = sum(1 for l in stored if not l.get("is_mock") and not l.get("is_manual"))
+    only_mock_in_store = stored and all(l.get("is_mock") for l in stored)
+
+    if fluximmo_live and only_mock_in_store:
+        # Les annonces Fluximmo n'ont pas pu être enregistrées (filtrées ou déjà vues)
+        # → les afficher directement depuis la session
+        st.info(
+            f"**{len(fluximmo_live)} annonces Fluximmo** récupérées lors du dernier pipeline "
+            "(non sauvegardées car filtrées ou déjà vues). Cliquez **🗑️ Vider le cache** puis relancez pour les sauvegarder."
+        )
+        listings = fluximmo_live + stored
+    else:
+        listings = stored
 
     if not listings:
         st.info("Aucune annonce stockée. Lancez une analyse pour commencer.")

@@ -122,6 +122,7 @@ async def run_pipeline(config: PipelineConfig) -> dict:
         "fluximmo_count": len(fluximmo_listings),
         "fluximmo_after_filter": fluximmo_after_filter,
         "fluximmo_error": fluximmo_error,
+        "fluximmo_listings": fluximmo_listings,
         "after_filter": len(filtered),
         "new_listings": len(new_listings),
         "notifications_sent": notifications_sent,

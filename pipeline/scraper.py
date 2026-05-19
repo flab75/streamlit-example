@@ -30,8 +30,8 @@ def _mock_listings(criteria: dict, source: str) -> List[Dict]:
         or criteria.get("filtre_departement")
         or criteria.get("ville", "France")
     )
-    prix_max = criteria.get("prix_max", 300000)
-    surface_min = criteria.get("surface_min", 0)
+    prix_max = criteria.get("prix_max") or 300000
+    surface_min = criteria.get("surface_min") or 0
 
     templates = [
         {"title": "Ferme rénovée avec source et pré",
