@@ -21,17 +21,29 @@ _BASE_CANDIDATES = [
 ]
 
 # ── Candidats chemins endpoint annonces ───────────────────────────────────────
+# Ordre : du plus probable au moins probable
 _ENDPOINT_CANDIDATES = [
+    # Patterns classiques API immobilière FR
+    "/search",
+    "/search/adverts",
+    "/search/annonces",
+    "/ads",
+    "/ads/search",
     "/adverts",
     "/adverts/search",
-    "/search/adverts",
     "/annonces",
     "/annonces/search",
-    "/search/annonces",
-    "/search",
-    "/biens",
+    # Patterns REST générique
     "/listings",
-    "/ads",
+    "/listings/search",
+    "/real-estate-ads",
+    "/real-estate-ads/search",
+    "/biens",
+    "/properties",
+    "/properties/search",
+    "/flux",
+    # Racine versionnée
+    "",
 ]
 
 # ── Noms de clés d'API alternatives ───────────────────────────────────────────
@@ -207,6 +219,19 @@ def scrape_fluximmo(
                         attempt_log[-1] += f" [{resp.text[:80]}]"
                         continue
 
+                    # Détecter le code d'erreur 10003 = "route inconnue" (Express)
+                    try:
+                        err_data = resp.json()
+                        err_code = err_data.get("error", {}).get("code") if isinstance(err_data, dict) else None
+                        if err_code == 10003:
+                            attempt_log[-1] += " [route inexistante]"
+                            continue  # ce chemin n'existe pas, essayer le suivant
+                        # Toute autre erreur JSON : le chemin existe mais params/auth wrong
+                        if err_code and err_code != 0:
+                            attempt_log[-1] += f" [erreur API code={err_code}: {err_data.get('error', {}).get('message', '')}]"
+                    except Exception:
+                        pass
+
                     if resp.status_code == 200:
                         try:
                             data = resp.json()
@@ -217,7 +242,6 @@ def scrape_fluximmo(
                         raw_list = _extract_list(data)
                         if raw_list is None:
                             attempt_log[-1] += f" [clés: {list(data.keys()) if isinstance(data, dict) else type(data).__name__}]"
-                            # Succès HTTP mais format inconnu — on enregistre pour debug
                             continue
 
                         listings = []
@@ -314,11 +338,22 @@ def diagnose_api(api_key: str) -> list[dict]:
                 r = requests.get(url, headers=headers_to_try, timeout=8,
                                  params={"limit": 1, "page": 1})
                 detail = r.text[:400]
+                # Annoter si c'est une route inexistante (code 10003)
+                rtype = "GET"
+                try:
+                    j = r.json()
+                    ec = j.get("error", {}).get("code") if isinstance(j, dict) else None
+                    if ec == 10003:
+                        rtype = "GET [route inconnue — 10003]"
+                    elif ec:
+                        rtype = f"GET [erreur API code={ec}]"
+                except Exception:
+                    pass
                 report.append({
                     "url": url,
                     "status": r.status_code,
                     "detail": detail,
-                    "type": "GET",
+                    "type": rtype,
                 })
                 if r.status_code == 200:
                     break  # on a trouvé quelque chose
