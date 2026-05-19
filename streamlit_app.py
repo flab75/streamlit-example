@@ -600,7 +600,14 @@ def render_pipeline_tab():
 
     df = pd.DataFrame(rows)
     display_df = df.drop(columns=["_id"])
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    try:
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
+    except Exception:
+        # Fallback si pyarrow/numpy incompatibles — rendu HTML sans dépendance Arrow
+        st.markdown(
+            display_df.to_html(index=False, classes="dataframe", border=0),
+            unsafe_allow_html=True,
+        )
 
     if st.button("🗑️ Vider le cache des annonces", help="Supprime les annonces stockées et les IDs vus"):
         for f in [DATA_DIR / "listings.json", DATA_DIR / "seen_ids.json"]:
@@ -908,7 +915,10 @@ def render_crm_tab():
             for p in filtered
         ]
     )
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    try:
+        st.dataframe(df, use_container_width=True, hide_index=True)
+    except Exception:
+        st.markdown(df.to_html(index=False, classes="dataframe", border=0), unsafe_allow_html=True)
 
     csv_data = pd.DataFrame(filtered).to_csv(index=False, encoding="utf-8")
     st.download_button(
