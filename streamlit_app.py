@@ -18,6 +18,7 @@ from pipeline.filters import PropertyFilter
 from pipeline.ville_enricher import get_ville_info_sync, ville_url
 from pipeline.geo_data import REGIONS
 from pipeline.manual_listing import extract_from_text
+from pipeline.fluximmo_scraper import diagnose_api as fluximmo_diagnose
 
 st.set_page_config(
     page_title="Agent Immobilier IA",
@@ -741,6 +742,8 @@ def render_config_tab():
         if getattr(config, "fluximmo_api_key", ""):
             st.success("Clé API Fluximmo configurée — les annonces réelles seront récupérées en priorité.")
 
+        submitted_diag = st.form_submit_button("Tester la connexion Fluximmo", type="secondary")
+
         st.subheader("Sources de scraping classiques (fallback si Fluximmo non configuré)")
         st.caption("Sources RSS ✅ : annonces réelles garanties. Sources ⚠️ : peuvent être bloquées par anti-bot.")
         col1, col2 = st.columns(2)
@@ -842,6 +845,29 @@ def render_config_tab():
         )
 
         submitted = st.form_submit_button("Sauvegarder la configuration", type="primary")
+
+    # ── Diagnostic Fluximmo (hors formulaire) ─────────────────────────────
+    if submitted_diag:
+        key_to_test = fluximmo_api_key.strip() if fluximmo_api_key.strip() else getattr(config, "fluximmo_api_key", "")
+        if not key_to_test:
+            st.warning("Entrez d'abord votre clé API Fluximmo.")
+        else:
+            with st.spinner("Diagnostic en cours — test de tous les endpoints…"):
+                report = fluximmo_diagnose(key_to_test)
+            st.subheader("Rapport de diagnostic Fluximmo")
+            ok = [r for r in report if r.get("status") == 200]
+            if ok:
+                st.success(f"{len(ok)} endpoint(s) ont répondu HTTP 200 !")
+            else:
+                st.error("Aucun endpoint n'a répondu HTTP 200.")
+            for r in report:
+                status = r.get("status", "?")
+                color = "green" if status == 200 else ("orange" if status in (401, 403) else "red")
+                with st.expander(f"[{status}] {r['url']}", expanded=(status == 200)):
+                    st.markdown(f"**Type :** {r.get('type', '?')}")
+                    detail = r.get("detail", "")
+                    if detail:
+                        st.code(detail[:600], language="json")
 
     if submitted:
         sources = []

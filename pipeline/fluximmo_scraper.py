@@ -2,75 +2,72 @@
 Scraper Fluximmo — API officielle d'annonces immobilières françaises.
 Documentation : https://doc.fluximmo.io/
 Auth : header  x-api-key: <clé>
-Base URL : https://api.fluximmo.io/v2
 """
 
 import hashlib
 import logging
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://api.fluximmo.io/v2"
+# ── Candidats base URL × version ──────────────────────────────────────────────
+_BASE_CANDIDATES = [
+    "https://api.fluximmo.io/v2",
+    "https://api.fluximmo.io/v1",
+    "https://api.fluximmo.io",
+    "https://api.fluximmo.com/v2",
+    "https://api.fluximmo.com",
+]
 
-# Mapping types de biens Fluximmo → label interne
-_TYPE_BIEN_MAP = {
-    "maison": ["maison", "villa", "chalet"],
-    "appartement": ["appartement", "studio", "loft"],
-    "terrain": ["terrain"],
-    "ferme": ["ferme", "corps de ferme", "domaine", "propriété"],
-}
+# ── Candidats chemins endpoint annonces ───────────────────────────────────────
+_ENDPOINT_CANDIDATES = [
+    "/adverts",
+    "/adverts/search",
+    "/search/adverts",
+    "/annonces",
+    "/annonces/search",
+    "/search/annonces",
+    "/search",
+    "/biens",
+    "/listings",
+    "/ads",
+]
 
-# Champs de réponse Fluximmo → champs internes (noms connus de la V2)
+# ── Noms de clés d'API alternatives ───────────────────────────────────────────
+_API_KEY_HEADERS = ["x-api-key", "Authorization", "X-API-KEY", "api-key"]
+
+# ── Mapping champs réponse → format interne ───────────────────────────────────
 _FIELD_ALIASES = {
-    # prix
-    "prix": "price", "price": "price", "prix_vente": "price",
-    "loyer": "price",
-    # surface habitable
-    "surface": "surface_m2", "surface_habitable": "surface_m2",
-    "surface_m2": "surface_m2",
-    # terrain
-    "terrain": "terrain_m2", "surface_terrain": "terrain_m2",
-    "terrain_m2": "terrain_m2",
-    # localisation
+    "prix": "price", "price": "price", "prix_vente": "price", "loyer": "price",
+    "surface": "surface_m2", "surface_habitable": "surface_m2", "surface_m2": "surface_m2",
+    "terrain": "terrain_m2", "surface_terrain": "terrain_m2", "terrain_m2": "terrain_m2",
     "ville": "ville", "city": "ville",
-    "departement": "departement", "dept": "departement",
-    "code_postal": "code_postal", "cp": "code_postal",
-    # description
-    "titre": "title", "title": "title", "libelle": "title",
-    "description": "description", "texte": "description",
-    # url
+    "departement": "departement", "dept": "departement", "department": "departement",
+    "code_postal": "code_postal", "cp": "code_postal", "zip": "code_postal",
+    "postal_code": "code_postal",
+    "titre": "title", "title": "title", "libelle": "title", "name": "title",
+    "description": "description", "texte": "description", "text": "description",
     "url": "url", "lien": "url", "link": "url", "url_annonce": "url",
-    # source
-    "source": "source", "portail": "source", "origine": "source",
-    # date
-    "date_publication": "pub_date", "date": "pub_date",
-    "created_at": "pub_date", "published_at": "pub_date",
-    # id
-    "id": "api_id", "_id": "api_id", "reference": "api_id",
-    "id_annonce": "api_id",
-    # type
-    "type_bien": "type_bien", "type": "type_bien",
-    "categorie": "type_bien",
-    # nb pièces
-    "nb_pieces": "nb_pieces", "pieces": "nb_pieces",
+    "source": "source", "portail": "source", "origine": "source", "portal": "source",
+    "date_publication": "pub_date", "date": "pub_date", "created_at": "pub_date",
+    "published_at": "pub_date", "publication_date": "pub_date",
+    "id": "api_id", "_id": "api_id", "reference": "api_id", "id_annonce": "api_id",
+    "type_bien": "type_bien", "type": "type_bien", "categorie": "type_bien",
+    "property_type": "type_bien", "holdings": "type_bien",
+    "nb_pieces": "nb_pieces", "pieces": "nb_pieces", "rooms": "nb_pieces",
     "nb_rooms": "nb_pieces",
+    "latitude": "lat", "lat": "lat",
+    "longitude": "lng", "lng": "lng", "lon": "lng",
 }
 
 
 def _normalize_listing(raw: dict) -> dict:
-    """Normalise un objet annonce brut Fluximmo vers le format interne."""
     out: dict = {}
     for k, v in raw.items():
-        key_lower = k.lower()
-        target = _FIELD_ALIASES.get(key_lower)
-        if target:
-            out[target] = v
-        else:
-            out[k] = v  # conserve les champs non mappés
+        target = _FIELD_ALIASES.get(k.lower())
+        out[target if target else k] = v
 
-    # Construire location depuis ville + dept + cp
     parts = []
     if out.get("ville"):
         parts.append(str(out["ville"]))
@@ -78,18 +75,17 @@ def _normalize_listing(raw: dict) -> dict:
         parts.append(str(out["departement"]))
     if out.get("code_postal"):
         parts.append(str(out["code_postal"]))
-    location = " - ".join(parts) if parts else raw.get("location", "")
+    location = " - ".join(parts) or raw.get("location", "")
 
-    # Normaliser les types numériques
-    price = out.get("price", 0)
-    if isinstance(price, str):
-        price = int("".join(c for c in price if c.isdigit()) or "0")
-    surface = out.get("surface_m2")
-    if isinstance(surface, str):
-        surface = int("".join(c for c in surface if c.isdigit()) or "0") or None
-    terrain = out.get("terrain_m2")
-    if isinstance(terrain, str):
-        terrain = int("".join(c for c in terrain if c.isdigit()) or "0") or None
+    def _int(v, default=0):
+        try:
+            return int(str(v).replace(" ", "").replace("\xa0", "").replace(",", ""))
+        except Exception:
+            return default
+
+    price = _int(out.get("price", 0))
+    surface = _int(out.get("surface_m2")) or None
+    terrain = _int(out.get("terrain_m2")) or None
 
     api_id = str(out.get("api_id", ""))
     url = str(out.get("url", "") or "")
@@ -99,10 +95,10 @@ def _normalize_listing(raw: dict) -> dict:
         "id": f"fluximmo-{api_id or uid}",
         "source": str(out.get("source", "fluximmo")),
         "title": str(out.get("title", "")),
-        "price": int(price) if price else 0,
+        "price": price,
         "surface_m2": surface,
         "terrain_m2": terrain,
-        "description": str(out.get("description", "")),
+        "description": str(out.get("description", ""))[:800],
         "location": location,
         "url": url,
         "is_mock": False,
@@ -110,29 +106,37 @@ def _normalize_listing(raw: dict) -> dict:
         "pub_date": str(out.get("pub_date", "")),
         "type_bien": str(out.get("type_bien", "")),
         "nb_pieces": out.get("nb_pieces"),
-        "_raw": raw,  # conservé pour debug
     }
 
 
-def _build_params(criteria: dict, page: int = 1, limit: int = 50) -> dict:
-    """Construit les paramètres de requête Fluximmo depuis les critères pipeline."""
-    params: dict = {
-        "type_transaction": "vente",
-        "type_bien": "maison",
-        "page": page,
-        "limit": limit,
-    }
+def _extract_list(data) -> Optional[List[dict]]:
+    """Cherche la liste d'annonces dans n'importe quelle structure de réponse."""
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for key in ("adverts", "data", "annonces", "results", "items",
+                    "listings", "biens", "records", "ads", "content"):
+            if key in data and isinstance(data[key], list):
+                return data[key]
+        for v in data.values():
+            if isinstance(v, list) and v and isinstance(v[0], dict):
+                return v
+    return None
 
+
+def _build_params(criteria: dict) -> dict:
+    params: dict = {}
     if criteria.get("prix_max"):
         params["prix_max"] = criteria["prix_max"]
+        params["price_max"] = criteria["prix_max"]
     if criteria.get("prix_min"):
         params["prix_min"] = criteria["prix_min"]
+        params["price_min"] = criteria["prix_min"]
     if criteria.get("surface_min"):
         params["surface_min"] = criteria["surface_min"]
     if criteria.get("terrain_min"):
         params["terrain_min"] = criteria["terrain_min"]
 
-    # Localisation
     dept = criteria.get("filtre_departement", "")
     if dept:
         try:
@@ -140,121 +144,188 @@ def _build_params(criteria: dict, page: int = 1, limit: int = 50) -> dict:
             code, name = resolve_dept(dept)
             if code:
                 params["departement"] = code
+                params["department"] = code
         except Exception:
             params["departement"] = dept
 
     if criteria.get("filtre_ville"):
         params["ville"] = criteria["filtre_ville"]
-
-    if criteria.get("filtre_region"):
-        params["region"] = criteria["filtre_region"]
+        params["city"] = criteria["filtre_ville"]
 
     return params
 
 
-def scrape_fluximmo(api_key: str, criteria: dict) -> tuple[List[Dict], Optional[str]]:
+# ── Fonction principale ────────────────────────────────────────────────────────
+
+def scrape_fluximmo(
+    api_key: str,
+    criteria: dict,
+) -> Tuple[List[Dict], Optional[str]]:
     """
-    Interroge l'API Fluximmo et retourne (listings, error_message).
-    error_message est None si tout s'est bien passé.
+    Interroge l'API Fluximmo.
+    Retourne (listings, error_message).  error_message=None si succès.
     """
     try:
         import requests
     except ImportError:
-        return [], "Le module 'requests' n'est pas installé."
-
-    headers = {
-        "x-api-key": api_key,
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-    }
+        return [], "Module 'requests' manquant."
 
     params = _build_params(criteria)
-    listings: List[Dict] = []
-    error_msg: Optional[str] = None
+    attempt_log: list[str] = []
 
-    # Endpoints candidates (la doc mentionne /annonces pour la V2)
-    endpoints_to_try = [
-        f"{BASE_URL}/annonces",
-        f"{BASE_URL}/annonces/search",
-        f"{BASE_URL}/search/annonces",
-        f"{BASE_URL}/biens",
-    ]
-
-    for endpoint in endpoints_to_try:
-        try:
-            resp = requests.get(endpoint, headers=headers, params=params, timeout=20)
-
-            if resp.status_code == 404:
-                continue  # essaie le prochain endpoint
-
-            if resp.status_code == 401:
-                return [], f"Clé API Fluximmo invalide ou expirée (HTTP 401)."
-
-            if resp.status_code == 403:
-                return [], f"Accès refusé (HTTP 403) — vérifiez vos droits ou votre quota."
-
-            if resp.status_code == 429:
-                return [], f"Quota API Fluximmo dépassé (HTTP 429). Réessayez plus tard."
-
-            if resp.status_code >= 500:
-                error_msg = f"Erreur serveur Fluximmo (HTTP {resp.status_code})."
-                continue
-
-            if resp.status_code == 200:
+    # Essai avec plusieurs combinaisons base × endpoint × header
+    for base in _BASE_CANDIDATES:
+        for endpoint in _ENDPOINT_CANDIDATES:
+            url = base + endpoint
+            for header_name in _API_KEY_HEADERS:
+                headers = {
+                    header_name: api_key,
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                }
+                # Essai GET
                 try:
-                    data = resp.json()
-                except Exception:
-                    error_msg = f"Réponse non-JSON de {endpoint}."
+                    resp = requests.get(url, headers=headers, params=params, timeout=12)
+                    log_entry = f"GET {url} → HTTP {resp.status_code}"
+                    attempt_log.append(log_entry)
+
+                    if resp.status_code == 401:
+                        return [], (
+                            f"Clé API invalide ou expirée (HTTP 401).\n"
+                            f"Clé utilisée : {api_key[:20]}…\n"
+                            f"URL testée : {url}\n"
+                            f"Réponse : {resp.text[:300]}"
+                        )
+                    if resp.status_code == 403:
+                        attempt_log[-1] += " [FORBIDDEN]"
+                        continue
+                    if resp.status_code == 429:
+                        return [], "Quota API Fluximmo dépassé (HTTP 429). Réessayez plus tard."
+                    if resp.status_code == 404:
+                        continue
+                    if resp.status_code >= 500:
+                        attempt_log[-1] += f" [{resp.text[:80]}]"
+                        continue
+
+                    if resp.status_code == 200:
+                        try:
+                            data = resp.json()
+                        except Exception:
+                            attempt_log[-1] += " [non-JSON]"
+                            continue
+
+                        raw_list = _extract_list(data)
+                        if raw_list is None:
+                            attempt_log[-1] += f" [clés: {list(data.keys()) if isinstance(data, dict) else type(data).__name__}]"
+                            # Succès HTTP mais format inconnu — on enregistre pour debug
+                            continue
+
+                        listings = []
+                        for raw in raw_list:
+                            try:
+                                listings.append(_normalize_listing(raw))
+                            except Exception as e:
+                                logger.debug("Erreur normalisation : %s", e)
+
+                        logger.info("Fluximmo OK : %d annonces — %s", len(listings), url)
+                        return listings, None  # ✅ succès
+
+                except requests.exceptions.ConnectionError as e:
+                    attempt_log.append(f"GET {url} → ConnectionError: {e}")
+                    break  # inutile de réessayer ce base avec d'autres endpoints
+                except requests.exceptions.Timeout:
+                    attempt_log.append(f"GET {url} → Timeout")
+                    continue
+                except Exception as e:
+                    attempt_log.append(f"GET {url} → {type(e).__name__}: {e}")
                     continue
 
-                # Cherche la liste d'annonces dans la réponse
-                raw_list = _extract_list(data)
-                if raw_list is None:
-                    error_msg = (
-                        f"Format de réponse inattendu depuis {endpoint}. "
-                        f"Clés reçues : {list(data.keys()) if isinstance(data, dict) else type(data).__name__}"
-                    )
-                    continue
-
-                for raw in raw_list:
+                # Essai POST sur les endpoints de recherche
+                if "search" in endpoint:
                     try:
-                        listings.append(_normalize_listing(raw))
+                        body = {
+                            "holdings": ["CLASS_HOUSE"],
+                            "transaction_type": "sell",
+                            **{k: v for k, v in params.items()
+                               if k in ("prix_max", "prix_min", "surface_min",
+                                        "departement", "ville")},
+                        }
+                        resp2 = requests.post(url, headers=headers, json=body, timeout=12)
+                        attempt_log.append(f"POST {url} → HTTP {resp2.status_code}")
+                        if resp2.status_code == 200:
+                            try:
+                                data = resp2.json()
+                                raw_list = _extract_list(data)
+                                if raw_list is not None:
+                                    listings = [_normalize_listing(r) for r in raw_list]
+                                    return listings, None
+                            except Exception:
+                                pass
                     except Exception as e:
-                        logger.warning("Erreur normalisation annonce Fluximmo : %s", e)
+                        attempt_log.append(f"POST {url} → {type(e).__name__}: {e}")
 
-                logger.info(
-                    "Fluximmo : %d annonces récupérées depuis %s",
-                    len(listings), endpoint
-                )
-                return listings, None  # succès
+                break  # ne pas réessayer avec d'autres header_names si GET 200/non-json
 
-            error_msg = f"HTTP {resp.status_code} depuis {endpoint}: {resp.text[:200]}"
+    summary = "\n".join(attempt_log[-20:])  # 20 dernières tentatives
+    return [], (
+        f"Aucun endpoint Fluximmo n'a fonctionné.\n\n"
+        f"Tentatives :\n{summary}\n\n"
+        f"→ Lancez le diagnostic depuis l'onglet Configuration pour voir les détails complets."
+    )
 
-        except requests.exceptions.ConnectionError:
-            return [], (
-                "Impossible de contacter api.fluximmo.io — vérifiez votre connexion internet. "
-                "Si vous utilisez un proxy ou un VPN, désactivez-le temporairement."
-            )
-        except requests.exceptions.Timeout:
-            error_msg = f"Timeout lors de l'appel à {endpoint}."
-            continue
+
+# ── Diagnostic ────────────────────────────────────────────────────────────────
+
+def diagnose_api(api_key: str) -> list[dict]:
+    """
+    Teste toutes les combinaisons base × endpoint et retourne un rapport détaillé.
+    À appeler depuis l'UI pour aider au débogage.
+    """
+    try:
+        import requests
+    except ImportError:
+        return [{"url": "N/A", "status": "ERREUR", "detail": "Module requests manquant"}]
+
+    report = []
+    headers_to_try = {"x-api-key": api_key}
+
+    # OpenAPI / Swagger discovery
+    for spec_url in [
+        "https://api.fluximmo.io/v2/openapi.json",
+        "https://api.fluximmo.io/openapi.json",
+        "https://api.fluximmo.io/v2/docs/openapi.json",
+        "https://api.fluximmo.com/openapi.json",
+    ]:
+        try:
+            r = requests.get(spec_url, headers=headers_to_try, timeout=8)
+            report.append({
+                "url": spec_url,
+                "status": r.status_code,
+                "detail": r.text[:400] if r.status_code == 200 else r.text[:200],
+                "type": "OpenAPI",
+            })
         except Exception as e:
-            error_msg = f"Erreur inattendue ({type(e).__name__}): {e}"
-            continue
+            report.append({"url": spec_url, "status": "ERR", "detail": str(e), "type": "OpenAPI"})
 
-    return listings, error_msg or "Aucun endpoint Fluximmo n'a répondu correctement."
+    for base in _BASE_CANDIDATES:
+        for endpoint in _ENDPOINT_CANDIDATES:
+            url = base + endpoint
+            try:
+                r = requests.get(url, headers=headers_to_try, timeout=8,
+                                 params={"limit": 1, "page": 1})
+                detail = r.text[:400]
+                report.append({
+                    "url": url,
+                    "status": r.status_code,
+                    "detail": detail,
+                    "type": "GET",
+                })
+                if r.status_code == 200:
+                    break  # on a trouvé quelque chose
+            except requests.exceptions.ConnectionError:
+                report.append({"url": url, "status": "CONNEXION_REFUSEE", "detail": "", "type": "GET"})
+                break
+            except Exception as e:
+                report.append({"url": url, "status": "ERR", "detail": str(e)[:100], "type": "GET"})
 
-
-def _extract_list(data) -> Optional[List[dict]]:
-    """Extrait la liste d'annonces depuis la réponse API (formats variés)."""
-    if isinstance(data, list):
-        return data
-    if isinstance(data, dict):
-        for key in ("data", "annonces", "results", "items", "listings", "biens", "records"):
-            if key in data and isinstance(data[key], list):
-                return data[key]
-        # Réponse avec pagination : {"total": N, "page": 1, "data": [...]}
-        for v in data.values():
-            if isinstance(v, list) and v:
-                return v
-    return None
+    return report
