@@ -529,9 +529,19 @@ def render_pipeline_tab():
             col3.metric("Nouvelles annonces", result["new_listings"])
 
             fluximmo_count = result.get("fluximmo_count", 0)
+            fluximmo_after = result.get("fluximmo_after_filter", 0)
             fluximmo_error = result.get("fluximmo_error")
             if fluximmo_count:
-                st.success(f"Fluximmo : **{fluximmo_count} annonces réelles** récupérées via l'API.")
+                if fluximmo_after == fluximmo_count:
+                    st.success(f"Fluximmo : **{fluximmo_count} annonces** récupérées, toutes ont passé les filtres.")
+                elif fluximmo_after > 0:
+                    st.success(f"Fluximmo : **{fluximmo_count} annonces** récupérées → **{fluximmo_after} ont passé les filtres**.")
+                else:
+                    st.warning(
+                        f"Fluximmo : **{fluximmo_count} annonces** récupérées mais **0 ont passé vos filtres**. "
+                        "Réinitialisez les filtres (bouton ci-dessus) ou augmentez **Prix max** et réduisez **Surface min** "
+                        "dans l'onglet **⚙️ Configuration**."
+                    )
             elif fluximmo_error:
                 st.error(f"Fluximmo API : {fluximmo_error}")
             elif not getattr(load_config(), "fluximmo_api_key", ""):
@@ -547,7 +557,19 @@ def render_pipeline_tab():
                 )
 
     st.divider()
-    st.subheader("Dernières annonces trouvées")
+    col_title, col_clear = st.columns([4, 1])
+    with col_title:
+        st.subheader("Dernières annonces trouvées")
+    with col_clear:
+        if st.button("🗑️ Vider le cache", help="Efface les annonces vues et le cache local pour tout réafficher au prochain pipeline"):
+            seen_file = DATA_DIR / "seen_ids.json"
+            listings_file = DATA_DIR / "listings.json"
+            if seen_file.exists():
+                seen_file.unlink()
+            if listings_file.exists():
+                listings_file.unlink()
+            st.success("Cache vidé. Relancez le pipeline.")
+            st.rerun()
 
     storage = ListingStorage(DATA_DIR)
     listings = storage.load_listings()
@@ -610,12 +632,6 @@ def render_pipeline_tab():
             display_df.to_html(index=False, classes="dataframe", border=0),
             unsafe_allow_html=True,
         )
-
-    if st.button("🗑️ Vider le cache des annonces", help="Supprime les annonces stockées et les IDs vus"):
-        for f in [DATA_DIR / "listings.json", DATA_DIR / "seen_ids.json"]:
-            f.unlink(missing_ok=True)
-        st.success("Cache vidé — relancez une analyse.")
-        st.rerun()
 
     # ── Saisie manuelle d'annonce ──────────────────────────────────────────
     st.divider()

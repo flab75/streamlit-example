@@ -18,8 +18,8 @@ class PipelineConfig:
     def __init__(self):
         self.sources: List[str] = ["pap", "seloger", "proprietes-rurales"]
         self.prix_min: int = 0
-        self.prix_max: int = 300000
-        self.surface_min: int = 80
+        self.prix_max: int = 0
+        self.surface_min: int = 0
         self.terrain_min: int = 0
         self.filtrer_eau: bool = False
         self.filtrer_campagne: bool = False
@@ -80,6 +80,9 @@ async def run_pipeline(config: PipelineConfig) -> dict:
     pf = PropertyFilter(filter_config)
     filtered = pf.apply(all_listings)
 
+    # Diagnostic Fluximmo : combien passent le filtre
+    fluximmo_after_filter = sum(1 for l in filtered if l.get("source") == "fluximmo")
+
     storage = ListingStorage(DATA_DIR)
     new_listings = storage.get_new_listings(filtered)
 
@@ -117,6 +120,7 @@ async def run_pipeline(config: PipelineConfig) -> dict:
     return {
         "total_scraped": len(all_listings),
         "fluximmo_count": len(fluximmo_listings),
+        "fluximmo_after_filter": fluximmo_after_filter,
         "fluximmo_error": fluximmo_error,
         "after_filter": len(filtered),
         "new_listings": len(new_listings),
