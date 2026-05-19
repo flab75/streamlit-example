@@ -67,14 +67,18 @@ def _normalize_listing(raw: dict) -> dict:
         target = _FIELD_ALIASES.get(k)
         out[target if target else k] = v
 
-    # Localisation
+    # Localisation — on inclut toujours le code postal ou le département
+    # pour que le PropertyFilter puisse filtrer géographiquement
     parts = []
     if out.get("ville"):
         parts.append(str(out["ville"]).title())
-    if out.get("code_postal"):
-        parts.append(f"({out['code_postal']})")
-    elif out.get("departement"):
-        parts.append(str(out["departement"]))
+    cp = str(out.get("code_postal", "") or "").strip()
+    dept = str(out.get("departement", "") or "").strip()
+    if cp:
+        parts.append(f"({cp})")
+    elif dept:
+        # Convertit le code numérique dept en code postal partiel pour la détection
+        parts.append(f"({dept})")
     location = " ".join(parts) if parts else ""
 
     # Prix — utilise price direct, ou calcule depuis price_per_area × surface

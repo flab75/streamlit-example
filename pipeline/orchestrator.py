@@ -80,8 +80,9 @@ async def run_pipeline(config: PipelineConfig) -> dict:
     pf = PropertyFilter(filter_config)
     filtered = pf.apply(all_listings)
 
-    # Diagnostic Fluximmo : combien passent le filtre
-    fluximmo_after_filter = sum(1 for l in filtered if l.get("source") == "fluximmo")
+    # Listings Fluximmo après filtre (géo, prix, surface) — utilisés pour l'affichage direct
+    fluximmo_filtered = [l for l in filtered if l.get("source") == "fluximmo"]
+    fluximmo_after_filter = len(fluximmo_filtered)
 
     storage = ListingStorage(DATA_DIR)
     new_listings = storage.get_new_listings(filtered)
@@ -122,7 +123,7 @@ async def run_pipeline(config: PipelineConfig) -> dict:
         "fluximmo_count": len(fluximmo_listings),
         "fluximmo_after_filter": fluximmo_after_filter,
         "fluximmo_error": fluximmo_error,
-        "fluximmo_listings": fluximmo_listings,
+        "fluximmo_listings": fluximmo_filtered,
         "after_filter": len(filtered),
         "new_listings": len(new_listings),
         "notifications_sent": notifications_sent,

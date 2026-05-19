@@ -582,11 +582,11 @@ def render_pipeline_tab():
     only_mock_in_store = stored and all(l.get("is_mock") for l in stored)
 
     if fluximmo_live and only_mock_in_store:
-        # Les annonces Fluximmo n'ont pas pu être enregistrées (filtrées ou déjà vues)
-        # → les afficher directement depuis la session
+        # Annonces Fluximmo filtrées (critères géo/prix/surface appliqués) mais non encore
+        # sauvegardées (déjà vues ou première exécution) → affichage direct depuis session
         st.info(
-            f"**{len(fluximmo_live)} annonces Fluximmo** récupérées lors du dernier pipeline "
-            "(non sauvegardées car filtrées ou déjà vues). Cliquez **🗑️ Vider le cache** puis relancez pour les sauvegarder."
+            f"**{len(fluximmo_live)} annonces Fluximmo** (département + filtres appliqués) affichées depuis la session. "
+            "Cliquez **🗑️ Vider le cache** puis relancez pour les sauvegarder définitivement."
         )
         listings = fluximmo_live + stored
     else:

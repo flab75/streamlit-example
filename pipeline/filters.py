@@ -91,9 +91,10 @@ class PropertyFilter:
     # ── Localisation ──────────────────────────────────────────────────────────
 
     def _location_text(self, listing: dict) -> str:
-        """Texte complet de localisation : location + titre + description."""
+        """Texte complet de localisation : location + département + titre + description."""
         return " ".join([
             listing.get("location", ""),
+            str(listing.get("departement", "") or ""),
             listing.get("title", ""),
             listing.get("description", ""),
         ]).lower()
@@ -143,8 +144,10 @@ class PropertyFilter:
         if code != self._dept_code and re.search(rf'\b{re.escape(code)}\d{{4}}\b', raw_location):
             return True
 
-        # 3. Code département brut dans le texte (ex: "(24)" ou "24 -")
+        # 3. Code département brut dans la localisation ou dans le texte complet
         if re.search(rf'\b{re.escape(self._dept_code)}\b', raw_location):
+            return True
+        if re.search(rf'\b{re.escape(self._dept_code)}\b', loc_lower):
             return True
 
         return False
