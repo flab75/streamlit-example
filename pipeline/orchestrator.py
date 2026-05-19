@@ -74,7 +74,10 @@ async def run_pipeline(config: PipelineConfig) -> dict:
         deduped_classic = [l for l in all_listings if l.get("url") not in seen_urls]
         all_listings = fluximmo_listings + deduped_classic
 
-    pf = PropertyFilter(config.__dict__)
+    filter_config = dict(config.__dict__)
+    if fluximmo_listings and filter_config.get("sources"):
+        filter_config["sources"] = list(filter_config["sources"]) + ["fluximmo"]
+    pf = PropertyFilter(filter_config)
     filtered = pf.apply(all_listings)
 
     storage = ListingStorage(DATA_DIR)

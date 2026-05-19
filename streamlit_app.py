@@ -583,11 +583,12 @@ def render_pipeline_tab():
         elif l.get("is_manual"):
             type_label = "Manuel"
         elif l.get("source") == "fluximmo" or l.get("id", "").startswith("fluximmo-"):
-            type_label = "Fluximmo"
+            website = l.get("website", "")
+            type_label = f"Fluximmo/{website}" if website else "Fluximmo"
         else:
             type_label = "Réel"
         rows.append({
-            "Source": l.get("source", "").upper(),
+            "Source": (l.get("website") or l.get("source", "")).upper() if (l.get("source") == "fluximmo" or l.get("id", "").startswith("fluximmo-")) else l.get("source", "").upper(),
             "Titre": l.get("title", ""),
             "Prix (€)": l.get("price", 0),
             "Surface (m²)": l.get("surface_m2") or "",
@@ -667,14 +668,19 @@ def render_pipeline_tab():
         is_mock = listing.get("is_mock", False)
         is_manual = listing.get("is_manual", False)
         score_label = f" · {score_global}/10" if score_global else ""
+        is_fluximmo = listing.get("source") == "fluximmo" or listing.get("id", "").startswith("fluximmo-")
         if is_mock:
             tag = " 〔Démo〕"
         elif is_manual:
             tag = " 〔Manuel〕"
+        elif is_fluximmo:
+            website = listing.get("website", "")
+            tag = f" 〔Fluximmo/{website}〕" if website else " 〔Fluximmo〕"
         else:
             tag = ""
+        source_label = (listing.get("website") or listing.get("source", "")).upper() if is_fluximmo else listing.get("source", "").upper()
         with st.expander(
-            f"{listing.get('source', '').upper()}{tag} — {listing.get('title', '')} — {listing.get('price', 0):,} €{score_label}"
+            f"{source_label}{tag} — {listing.get('title', '')} — {listing.get('price', 0):,} €{score_label}"
         ):
             col1, col2 = st.columns(2)
             with col1:
@@ -685,7 +691,8 @@ def render_pipeline_tab():
                 st.write(f"**Terrain :** {terrain:,} m²" if terrain else "**Terrain :** N/A")
                 url = listing.get("url", "")
                 if url and not is_mock:
-                    st.markdown(f"[Voir l'annonce sur {listing.get('source','').upper()}]({url})")
+                    link_label = (listing.get("website") or listing.get("source", "")).upper() if is_fluximmo else listing.get("source", "").upper()
+                    st.markdown(f"[Voir l'annonce sur {link_label}]({url})")
                 elif is_mock:
                     st.caption("Données de démonstration — lien non disponible")
                 # Liens de recherche pour annonces manuelles (ou sans URL)

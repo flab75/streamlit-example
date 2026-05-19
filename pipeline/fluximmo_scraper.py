@@ -98,12 +98,13 @@ def _normalize_listing(raw: dict) -> dict:
     uid = hashlib.md5((api_id or url or str(raw)).encode()).hexdigest()[:8]
 
     source = str(out.get("source", "fluximmo"))
-    # Nettoie "bienici.com" → "bienici"
-    source_label = source.split(".")[0] if "." in source else source
+    # "bienici.com" → label affiché, mais la source interne reste "fluximmo"
+    website_label = source.split(".")[0] if "." in source else source
 
     return {
         "id":           f"fluximmo-{api_id or uid}",
-        "source":       source_label,
+        "source":       "fluximmo",         # toujours "fluximmo" pour le filtre
+        "website":      website_label,       # portail d'origine pour l'affichage
         "title":        str(out.get("title", "")),
         "price":        price,
         "surface_m2":   surface,
