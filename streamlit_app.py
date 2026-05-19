@@ -726,24 +726,57 @@ def render_config_tab():
 
     config = load_config()
 
+    # ── Diagnostic Fluximmo (hors formulaire pour éviter le bug des form buttons) ──
+    st.subheader("API Fluximmo (annonces réelles — recommandé)")
+    st.caption(
+        "Fluximmo agrège 500 000+ annonces depuis 70 portails (PAP, SeLoger, LeBonCoin…). "
+        "Essai gratuit : 6 jours / 250 crédits. Documentation : https://doc.fluximmo.io"
+    )
+    fluximmo_key_display = st.text_input(
+        "Clé API Fluximmo",
+        value=getattr(config, "fluximmo_api_key", ""),
+        type="password",
+        placeholder="trial_default_xxxx-xxxx-xxxx-xxxx",
+        key="fluximmo_key_input",
+        help="Clé x-api-key pour l'API Fluximmo V2.",
+    )
+    if st.button("Tester la connexion Fluximmo", type="secondary"):
+        key_to_test = fluximmo_key_display.strip() or getattr(config, "fluximmo_api_key", "")
+        if not key_to_test:
+            st.warning("Entrez d'abord votre clé API Fluximmo.")
+        else:
+            with st.spinner("Diagnostic en cours — test de tous les endpoints…"):
+                report = fluximmo_diagnose(key_to_test)
+            ok = [r for r in report if r.get("status") == 200]
+            not_10003 = [r for r in report
+                         if r.get("status") not in (200,) and "10003" not in r.get("type", "")
+                         and "ERR" not in str(r.get("status", ""))
+                         and "CONNEXION" not in str(r.get("status", ""))]
+            if ok:
+                st.success(f"{len(ok)} endpoint(s) ont répondu HTTP 200 !")
+            elif not_10003:
+                st.warning(
+                    f"{len(not_10003)} endpoint(s) existent (erreur API ≠ 10003). "
+                    "Cliquez pour voir les détails."
+                )
+            else:
+                st.error("Tous les endpoints testés sont inconnus (code 10003) ou en erreur réseau.")
+            for r in report:
+                status = r.get("status", "?")
+                rtype = r.get("type", "")
+                is_known_route = "10003" not in rtype and status != "CONNEXION_REFUSEE"
+                with st.expander(
+                    f"[{status}] {r['url']}",
+                    expanded=(status == 200 or (is_known_route and "ERR" not in str(status)))
+                ):
+                    st.caption(rtype)
+                    detail = r.get("detail", "")
+                    if detail:
+                        st.code(detail[:800], language="json")
+
+    st.divider()
+
     with st.form("pipeline_config_form"):
-        st.subheader("API Fluximmo (annonces réelles — recommandé)")
-        st.caption(
-            "Fluximmo agrège 500 000+ annonces depuis 70 portails (PAP, SeLoger, LeBonCoin…). "
-            "Essai gratuit : 6 jours / 250 crédits. Documentation : https://doc.fluximmo.io"
-        )
-        fluximmo_api_key = st.text_input(
-            "Clé API Fluximmo",
-            value=getattr(config, "fluximmo_api_key", ""),
-            type="password",
-            placeholder="trial_default_xxxx-xxxx-xxxx-xxxx",
-            help="Clé x-api-key pour l'API Fluximmo V2 (api.fluximmo.io/v2).",
-        )
-        if getattr(config, "fluximmo_api_key", ""):
-            st.success("Clé API Fluximmo configurée — les annonces réelles seront récupérées en priorité.")
-
-        submitted_diag = st.form_submit_button("Tester la connexion Fluximmo", type="secondary")
-
         st.subheader("Sources de scraping classiques (fallback si Fluximmo non configuré)")
         st.caption("Sources RSS ✅ : annonces réelles garanties. Sources ⚠️ : peuvent être bloquées par anti-bot.")
         col1, col2 = st.columns(2)
@@ -846,29 +879,6 @@ def render_config_tab():
 
         submitted = st.form_submit_button("Sauvegarder la configuration", type="primary")
 
-    # ── Diagnostic Fluximmo (hors formulaire) ─────────────────────────────
-    if submitted_diag:
-        key_to_test = fluximmo_api_key.strip() if fluximmo_api_key.strip() else getattr(config, "fluximmo_api_key", "")
-        if not key_to_test:
-            st.warning("Entrez d'abord votre clé API Fluximmo.")
-        else:
-            with st.spinner("Diagnostic en cours — test de tous les endpoints…"):
-                report = fluximmo_diagnose(key_to_test)
-            st.subheader("Rapport de diagnostic Fluximmo")
-            ok = [r for r in report if r.get("status") == 200]
-            if ok:
-                st.success(f"{len(ok)} endpoint(s) ont répondu HTTP 200 !")
-            else:
-                st.error("Aucun endpoint n'a répondu HTTP 200.")
-            for r in report:
-                status = r.get("status", "?")
-                color = "green" if status == 200 else ("orange" if status in (401, 403) else "red")
-                with st.expander(f"[{status}] {r['url']}", expanded=(status == 200)):
-                    st.markdown(f"**Type :** {r.get('type', '?')}")
-                    detail = r.get("detail", "")
-                    if detail:
-                        st.code(detail[:600], language="json")
-
     if submitted:
         sources = []
         if src_pap:
@@ -881,7 +891,7 @@ def render_config_tab():
             sources.append("leboncoin")
 
         config.sources = sources
-        config.fluximmo_api_key = fluximmo_api_key.strip()
+        config.fluximmo_api_key = fluximmo_key_display.strip()
         config.filtre_region = filtre_region
         config.filtre_departement = filtre_departement.strip()
         config.filtre_ville = filtre_ville.strip()

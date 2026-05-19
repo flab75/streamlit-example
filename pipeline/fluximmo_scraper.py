@@ -303,7 +303,7 @@ def scrape_fluximmo(
 def diagnose_api(api_key: str) -> list[dict]:
     """
     Teste toutes les combinaisons base × endpoint et retourne un rapport détaillé.
-    À appeler depuis l'UI pour aider au débogage.
+    Identifie les routes qui existent (≠ 10003) même si elles retournent une erreur.
     """
     try:
         import requests
@@ -311,56 +311,70 @@ def diagnose_api(api_key: str) -> list[dict]:
         return [{"url": "N/A", "status": "ERREUR", "detail": "Module requests manquant"}]
 
     report = []
-    headers_to_try = {"x-api-key": api_key}
+    h = {"x-api-key": api_key, "Accept": "application/json"}
 
-    # OpenAPI / Swagger discovery
+    def _probe(url, method="GET", body=None):
+        try:
+            if method == "POST":
+                r = requests.post(url, headers={**h, "Content-Type": "application/json"},
+                                  json=body or {}, timeout=8)
+            else:
+                r = requests.get(url, headers=h, params={"limit": 1, "page": 1}, timeout=8)
+            raw = r.text[:600]
+            rtype = f"{method}"
+            try:
+                j = r.json()
+                ec = j.get("error", {}).get("code") if isinstance(j, dict) else None
+                em = j.get("error", {}).get("message", "") if isinstance(j, dict) else ""
+                if ec == 10003:
+                    rtype += " [route inconnue — 10003]"
+                elif ec:
+                    rtype += f" [erreur API code={ec}: {em}]"
+            except Exception:
+                pass
+            return {"url": url, "status": r.status_code, "detail": raw, "type": rtype}
+        except requests.exceptions.ConnectionError:
+            return {"url": url, "status": "CONNEXION_REFUSEE", "detail": "", "type": method}
+        except Exception as e:
+            return {"url": url, "status": "ERR", "detail": str(e)[:200], "type": method}
+
+    # ── 1. Racines (pour voir le message d'accueil ou les routes disponibles) ──
+    for root in ["https://api.fluximmo.io/v2", "https://api.fluximmo.io",
+                 "https://api.fluximmo.com/v2", "https://api.fluximmo.com"]:
+        report.append(_probe(root))
+
+    # ── 2. OpenAPI / Swagger discovery ────────────────────────────────────────
     for spec_url in [
         "https://api.fluximmo.io/v2/openapi.json",
         "https://api.fluximmo.io/openapi.json",
-        "https://api.fluximmo.io/v2/docs/openapi.json",
+        "https://api.fluximmo.io/v2/swagger.json",
+        "https://api.fluximmo.io/v2/docs",
         "https://api.fluximmo.com/openapi.json",
     ]:
-        try:
-            r = requests.get(spec_url, headers=headers_to_try, timeout=8)
-            report.append({
-                "url": spec_url,
-                "status": r.status_code,
-                "detail": r.text[:400] if r.status_code == 200 else r.text[:200],
-                "type": "OpenAPI",
-            })
-        except Exception as e:
-            report.append({"url": spec_url, "status": "ERR", "detail": str(e), "type": "OpenAPI"})
+        report.append(_probe(spec_url))
 
+    # ── 3. GET sur toutes combinaisons base × endpoint ────────────────────────
     for base in _BASE_CANDIDATES:
         for endpoint in _ENDPOINT_CANDIDATES:
-            url = base + endpoint
-            try:
-                r = requests.get(url, headers=headers_to_try, timeout=8,
-                                 params={"limit": 1, "page": 1})
-                detail = r.text[:400]
-                # Annoter si c'est une route inexistante (code 10003)
-                rtype = "GET"
-                try:
-                    j = r.json()
-                    ec = j.get("error", {}).get("code") if isinstance(j, dict) else None
-                    if ec == 10003:
-                        rtype = "GET [route inconnue — 10003]"
-                    elif ec:
-                        rtype = f"GET [erreur API code={ec}]"
-                except Exception:
-                    pass
-                report.append({
-                    "url": url,
-                    "status": r.status_code,
-                    "detail": detail,
-                    "type": rtype,
-                })
-                if r.status_code == 200:
-                    break  # on a trouvé quelque chose
-            except requests.exceptions.ConnectionError:
-                report.append({"url": url, "status": "CONNEXION_REFUSEE", "detail": "", "type": "GET"})
-                break
-            except Exception as e:
-                report.append({"url": url, "status": "ERR", "detail": str(e)[:100], "type": "GET"})
+            report.append(_probe(base + endpoint))
 
-    return report
+    # ── 4. POST sur les endpoints /search (body JSON Fluximmo connu) ──────────
+    search_body = {
+        "holdings": ["CLASS_HOUSE"],
+        "transaction_type": "sell",
+        "limit": 2,
+    }
+    for base in ["https://api.fluximmo.io/v2", "https://api.fluximmo.io"]:
+        for ep in ["/search", "/adverts/search", "/ads/search",
+                   "/annonces/search", "/listings/search"]:
+            report.append(_probe(base + ep, method="POST", body=search_body))
+
+    # Déduplique les URL identiques (garde le premier résultat)
+    seen_urls: set = set()
+    deduped = []
+    for r in report:
+        if r["url"] not in seen_urls:
+            seen_urls.add(r["url"])
+            deduped.append(r)
+
+    return deduped
