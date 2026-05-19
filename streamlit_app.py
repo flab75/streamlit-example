@@ -17,6 +17,7 @@ from pipeline.storage import ListingStorage
 from pipeline.filters import PropertyFilter
 from pipeline.ville_enricher import get_ville_info_sync, ville_url
 from pipeline.geo_data import REGIONS
+from pipeline.manual_listing import extract_from_text
 
 st.set_page_config(
     page_title="Agent Immobilier IA",
@@ -525,6 +526,19 @@ def render_pipeline_tab():
             col1.metric("Annonces scrapées", result["total_scraped"])
             col2.metric("Après filtrage", result["after_filter"])
             col3.metric("Nouvelles annonces", result["new_listings"])
+
+            fluximmo_count = result.get("fluximmo_count", 0)
+            fluximmo_error = result.get("fluximmo_error")
+            if fluximmo_count:
+                st.success(f"Fluximmo : **{fluximmo_count} annonces réelles** récupérées via l'API.")
+            elif fluximmo_error:
+                st.error(f"Fluximmo API : {fluximmo_error}")
+            elif not getattr(load_config(), "fluximmo_api_key", ""):
+                st.info(
+                    "Configurez votre **clé API Fluximmo** dans l'onglet Configuration "
+                    "pour obtenir de vraies annonces (essai gratuit 6 jours / 250 crédits)."
+                )
+
             if result["after_filter"] == 0 and result["total_scraped"] > 0:
                 st.warning(
                     "0 annonce après filtrage. Vérifiez vos critères dans les **Filtres actifs** "
@@ -545,11 +559,17 @@ def render_pipeline_tab():
     country_kw = PropertyFilter.COUNTRYSIDE_KEYWORDS
 
     nb_mock = sum(1 for l in listings if l.get("is_mock"))
-    if nb_mock > 0:
-        st.info(
-            f"ℹ️ {nb_mock}/{len(listings)} annonces sont des **données de démonstration** "
-            "(le scraping PAP/LBC est bloqué par anti-bot). "
-            "Les liens vers des annonces réelles apparaîtront dès que le scraping réussit."
+    nb_fluximmo = sum(1 for l in listings if l.get("source") == "fluximmo" or l.get("id", "").startswith("fluximmo-"))
+    nb_manual = sum(1 for l in listings if l.get("is_manual"))
+
+    if nb_fluximmo:
+        st.success(f"{nb_fluximmo} annonce(s) Fluximmo (réelles) dans le cache.")
+    if nb_manual:
+        st.info(f"{nb_manual} annonce(s) saisie(s) manuellement.")
+    if nb_mock > 0 and not nb_fluximmo:
+        st.warning(
+            f"{nb_mock}/{len(listings)} annonces sont des **données de démonstration**. "
+            "Configurez la clé API Fluximmo ou saisissez une annonce manuellement ci-dessous."
         )
 
     rows = []
@@ -557,6 +577,14 @@ def render_pipeline_tab():
         text = f"{l.get('title', '')} {l.get('description', '')}".lower()
         has_water = any(kw in text for kw in water_kw)
         is_countryside = any(kw in text for kw in country_kw)
+        if l.get("is_mock"):
+            type_label = "Démo"
+        elif l.get("is_manual"):
+            type_label = "Manuel"
+        elif l.get("source") == "fluximmo" or l.get("id", "").startswith("fluximmo-"):
+            type_label = "Fluximmo"
+        else:
+            type_label = "Réel"
         rows.append({
             "Source": l.get("source", "").upper(),
             "Titre": l.get("title", ""),
@@ -566,7 +594,7 @@ def render_pipeline_tab():
             "Lieu": l.get("location", ""),
             "Eau": "💧" if has_water else "—",
             "Campagne": "🌿" if is_countryside else "—",
-            "Type": "Démo" if l.get("is_mock") else "Réel",
+            "Type": type_label,
             "_id": l.get("id", ""),
         })
 
@@ -580,16 +608,65 @@ def render_pipeline_tab():
         st.success("Cache vidé — relancez une analyse.")
         st.rerun()
 
+    # ── Saisie manuelle d'annonce ──────────────────────────────────────────
+    st.divider()
+    with st.expander("Ajouter une annonce manuellement (coller un texte)", expanded=False):
+        st.caption(
+            "Collez le texte complet d'une annonce (titre, prix, surface, adresse, description). "
+            "Le système extrait les informations automatiquement et génère des liens de recherche "
+            "pour retrouver l'annonce en ligne."
+        )
+        manual_text = st.text_area(
+            "Texte de l'annonce",
+            height=200,
+            placeholder=(
+                "Exemple :\n"
+                "Ferme rénovée avec source et pré — 145 000 €\n"
+                "Magnifique ferme en pierre de 160 m², terrain 2,5 ha, puits fonctionnel.\n"
+                "Source captée, grange attenante. Secteur calme.\n"
+                "Proche Périgueux (24000) — 5 pièces\n"
+                "Contact : 06 12 34 56 78"
+            ),
+            key="manual_listing_text",
+        )
+        if st.button("Extraire et ajouter à mes annonces", key="manual_extract_btn"):
+            if manual_text.strip():
+                extracted = extract_from_text(manual_text)
+                storage = ListingStorage(DATA_DIR)
+                storage.save_listing(extracted)
+                storage.mark_seen(extracted["id"])
+                st.success(
+                    f"Annonce ajoutée : **{extracted['title']}** — "
+                    f"{extracted['price']:,} € — {extracted['location'] or 'lieu non détecté'}"
+                )
+                if extracted.get("surface_m2"):
+                    st.write(f"Surface détectée : {extracted['surface_m2']} m²")
+                if extracted.get("terrain_m2"):
+                    st.write(f"Terrain détecté : {extracted['terrain_m2']:,} m²")
+                if extracted.get("search_links"):
+                    st.write("**Liens pour retrouver l'annonce en ligne :**")
+                    for label, href in extracted["search_links"].items():
+                        st.markdown(f"- [{label}]({href})")
+                st.rerun()
+            else:
+                st.warning("Collez d'abord un texte d'annonce.")
+
     st.subheader("Détails des annonces")
     for listing in listings[-20:]:
         dvf = listing.get("dvf_stats", {})
         ville_stats = listing.get("ville_stats", {})
         score_global = ville_stats.get("score_global")
         is_mock = listing.get("is_mock", False)
+        is_manual = listing.get("is_manual", False)
         score_label = f" · {score_global}/10" if score_global else ""
-        mock_label = " 〔Démo〕" if is_mock else ""
+        if is_mock:
+            tag = " 〔Démo〕"
+        elif is_manual:
+            tag = " 〔Manuel〕"
+        else:
+            tag = ""
         with st.expander(
-            f"{listing.get('source', '').upper()}{mock_label} — {listing.get('title', '')} — {listing.get('price', 0):,} €{score_label}"
+            f"{listing.get('source', '').upper()}{tag} — {listing.get('title', '')} — {listing.get('price', 0):,} €{score_label}"
         ):
             col1, col2 = st.columns(2)
             with col1:
@@ -603,6 +680,14 @@ def render_pipeline_tab():
                     st.markdown(f"[Voir l'annonce sur {listing.get('source','').upper()}]({url})")
                 elif is_mock:
                     st.caption("Données de démonstration — lien non disponible")
+                # Liens de recherche pour annonces manuelles (ou sans URL)
+                search_links = listing.get("search_links", {})
+                if search_links:
+                    st.caption("Rechercher cette annonce en ligne :")
+                    link_cols = st.columns(min(3, len(search_links)))
+                    for i, (label, href) in enumerate(search_links.items()):
+                        with link_cols[i % len(link_cols)]:
+                            st.markdown(f"[{label}]({href})")
             with col2:
                 if dvf:
                     st.write(f"**Analyse DVF :** {dvf.get('analyse', 'N/A')}")
@@ -634,7 +719,22 @@ def render_config_tab():
     config = load_config()
 
     with st.form("pipeline_config_form"):
-        st.subheader("Sources de scraping")
+        st.subheader("API Fluximmo (annonces réelles — recommandé)")
+        st.caption(
+            "Fluximmo agrège 500 000+ annonces depuis 70 portails (PAP, SeLoger, LeBonCoin…). "
+            "Essai gratuit : 6 jours / 250 crédits. Documentation : https://doc.fluximmo.io"
+        )
+        fluximmo_api_key = st.text_input(
+            "Clé API Fluximmo",
+            value=getattr(config, "fluximmo_api_key", ""),
+            type="password",
+            placeholder="trial_default_xxxx-xxxx-xxxx-xxxx",
+            help="Clé x-api-key pour l'API Fluximmo V2 (api.fluximmo.io/v2).",
+        )
+        if getattr(config, "fluximmo_api_key", ""):
+            st.success("Clé API Fluximmo configurée — les annonces réelles seront récupérées en priorité.")
+
+        st.subheader("Sources de scraping classiques (fallback si Fluximmo non configuré)")
         st.caption("Sources RSS ✅ : annonces réelles garanties. Sources ⚠️ : peuvent être bloquées par anti-bot.")
         col1, col2 = st.columns(2)
         with col1:
@@ -748,6 +848,7 @@ def render_config_tab():
             sources.append("leboncoin")
 
         config.sources = sources
+        config.fluximmo_api_key = fluximmo_api_key.strip()
         config.filtre_region = filtre_region
         config.filtre_departement = filtre_departement.strip()
         config.filtre_ville = filtre_ville.strip()

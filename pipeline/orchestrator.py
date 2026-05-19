@@ -9,6 +9,7 @@ from .dvf_enricher import enrich_listing
 from .ville_enricher import fetch_ville_data
 from .storage import ListingStorage, GoogleSheetsStorage
 from .notifier import notify_all
+from .fluximmo_scraper import scrape_fluximmo
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 
@@ -27,6 +28,7 @@ class PipelineConfig:
         self.filtre_region: str = ""
         self.filtre_departement: str = ""
         self.filtre_ville: str = ""
+        self.fluximmo_api_key: str = ""
         self.enrichir_dvf: bool = True
         self.enrichir_ville: bool = True
         self.slack_webhook: str = ""
@@ -55,7 +57,22 @@ async def run_pipeline(config: PipelineConfig) -> dict:
         "filtre_ville": getattr(config, "filtre_ville", ""),
         "filtre_region": getattr(config, "filtre_region", ""),
     }
+    # ── Fluximmo (priorité maximale si clé configurée) ─────────────────────
+    fluximmo_error: str | None = None
+    fluximmo_listings: list = []
+    if getattr(config, "fluximmo_api_key", ""):
+        fluximmo_listings, fluximmo_error = scrape_fluximmo(
+            config.fluximmo_api_key, criteria
+        )
+
+    # ── Scrapers RSS/requests classiques ──────────────────────────────────
     all_listings = await run_scrapers(config.sources, criteria)
+
+    # Fusion : Fluximmo en tête, sans doublons URL
+    if fluximmo_listings:
+        seen_urls = {l["url"] for l in fluximmo_listings if l.get("url")}
+        deduped_classic = [l for l in all_listings if l.get("url") not in seen_urls]
+        all_listings = fluximmo_listings + deduped_classic
 
     pf = PropertyFilter(config.__dict__)
     filtered = pf.apply(all_listings)
@@ -96,6 +113,8 @@ async def run_pipeline(config: PipelineConfig) -> dict:
 
     return {
         "total_scraped": len(all_listings),
+        "fluximmo_count": len(fluximmo_listings),
+        "fluximmo_error": fluximmo_error,
         "after_filter": len(filtered),
         "new_listings": len(new_listings),
         "notifications_sent": notifications_sent,
